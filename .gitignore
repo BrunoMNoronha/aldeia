@@ -16,6 +16,11 @@ data/*
 .env.*
 !.env.example
 
+# Build do Next.js
+.next/
+out/
+next-env.d.ts
+
 # Logs e temporários
 *.log
 npm-debug.log*

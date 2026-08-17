@@ -1,9 +1,19 @@
 'use strict';
 
-// Leitura cadastral de associados (F-01 / F-02).
+// Leitura cadastral de associados no SQLite (F-01 / F-02).
 //
 // Este servico e SOMENTE LEITURA: nao ha INSERT, UPDATE, DELETE nem
 // withTransaction. Ele existe para alimentar a superficie HTML operacional.
+//
+// O contrato (normalizacao de entrada, escape de LIKE, mapeamento de saida,
+// limite/truncamento) vive em `associados-contrato.js` e e COMPARTILHADO com a
+// implementacao PostgreSQL (`associados-postgresql.js`, ADR-003 / PG-2). Aqui
+// fica apenas o que e especifico do SQLite: o SQL e a chamada sincrona do
+// `better-sqlite3`.
+//
+// Este arquivo e TRANSITORIO. O SQLite continua sendo o runtime ate PG-6 e a
+// retirada do `better-sqlite3` acontece em PG-7; nesse momento este modulo sai e
+// o contrato permanece.
 //
 // O que este servico NAO faz:
 //   * interpretar `legacy_status_code` ('a', 'i', 'DESLIGADO', ...) — C-01 segue
@@ -14,9 +24,17 @@
 //   * tratar `legacy_id` como numero (a planilha pode ter '007' e '7' como
 //     identidades DIFERENTES).
 
-/** Teto padrao de linhas por consulta. A UI avisa quando ha mais. */
-const LIMITE_PADRAO = 500;
+const {
+  LIMITE_PADRAO,
+  normalizarTexto,
+  idInteiroPositivo,
+  limiteValido,
+  padraoContem,
+  mapearAssociado,
+  montarListagem,
+} = require('./associados-contrato');
 
+/** Colunas lidas. Nomes de coluna do schema SQLite (`migrations/001_...sql`). */
 const COLUNAS_ASSOCIADO = `
     id,
     legacy_id,
@@ -36,67 +54,6 @@ const ORDENACAO = 'ORDER BY nome COLLATE NOCASE ASC, id ASC';
 const SQL_ASSOCIADO_POR_ID = `SELECT ${COLUNAS_ASSOCIADO} FROM associado WHERE id = ?`;
 
 const SQL_ASSOCIADO_POR_LEGACY_ID = `SELECT ${COLUNAS_ASSOCIADO} FROM associado WHERE legacy_id = ?`;
-
-// --- normalizacao de entrada -------------------------------------------------
-
-/**
- * Texto de filtro vindo de query string ou chamada direta.
- * Nao-string (undefined, null, array de query duplicada) nao vira filtro:
- * um filtro que o servico nao entende deve ser IGNORADO, nunca adivinhado.
- */
-function normalizarTexto(valor) {
-  if (typeof valor !== 'string') return null;
-  const limpo = valor.trim();
-  return limpo === '' ? null : limpo;
-}
-
-/**
- * `%`, `_` e `\` digitados pelo usuario sao caracteres LITERAIS do nome, nao
- * curingas. Escapamos antes de montar o padrao; o SQL usa ESCAPE '\'.
- */
-function escaparLike(texto) {
-  return texto.replace(/[\\%_]/g, (caractere) => `\\${caractere}`);
-}
-
-/** Aceita apenas inteiro positivo (numero ou string de digitos). */
-function idInteiroPositivo(valor) {
-  if (typeof valor === 'number') {
-    return Number.isInteger(valor) && valor > 0 ? valor : null;
-  }
-  if (typeof valor === 'string' && /^\d+$/.test(valor)) {
-    const numero = Number(valor);
-    return numero > 0 ? numero : null;
-  }
-  return null;
-}
-
-function limiteValido(valor) {
-  return Number.isInteger(valor) && valor > 0 ? valor : LIMITE_PADRAO;
-}
-
-// --- mapeamento linha -> objeto de dominio -----------------------------------
-
-/**
- * Espelha a linha do banco, nada mais.
- *
- * Deliberadamente NAO existem campos como `situacao`, `situacaoFinanceira`,
- * `adimplente`, `inadimplente`, `saldo`, `emDia` ou `devedor`: nenhum deles
- * pode ser derivado do cadastro (M-06) e inventa-los aqui contaminaria toda a
- * UI com uma interpretacao que a baseline ainda nao autorizou.
- */
-function mapearAssociado(row) {
-  if (row === undefined || row === null) return null;
-  return {
-    id: row.id,
-    legacyId: row.legacy_id,
-    nome: row.nome,
-    statusCadastral: row.status_cadastral,
-    legacyStatusCode: row.legacy_status_code,
-    observacoes: row.observacoes,
-    criadoEm: row.criado_em,
-    atualizadoEm: row.atualizado_em,
-  };
-}
 
 // --- leitura ------------------------------------------------------------------
 
@@ -127,7 +84,7 @@ function listarAssociados(db, { nome = null, legacyId = null, limite = LIMITE_PA
 
   if (nomeFiltro !== null) {
     clausulas.push("nome LIKE ? ESCAPE '\\'");
-    parametros.push(`%${escaparLike(nomeFiltro)}%`);
+    parametros.push(padraoContem(nomeFiltro));
   }
   if (legacyIdFiltro !== null) {
     // Comparacao de TEXTO: '007' e '7' sao identidades diferentes.
@@ -141,15 +98,8 @@ function listarAssociados(db, { nome = null, legacyId = null, limite = LIMITE_PA
   // Uma linha a mais que o teto: e assim que se sabe que houve corte sem
   // contar o universo inteiro.
   const linhas = db.prepare(sql).all(...parametros, teto + 1);
-  const truncado = linhas.length > teto;
-  const itens = (truncado ? linhas.slice(0, teto) : linhas).map(mapearAssociado);
 
-  return {
-    itens,
-    total: itens.length,
-    truncado,
-    filtros: { nome: nomeFiltro, legacyId: legacyIdFiltro },
-  };
+  return montarListagem(linhas, teto, { nome: nomeFiltro, legacyId: legacyIdFiltro });
 }
 
 /**

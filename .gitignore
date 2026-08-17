@@ -1,0 +1,31 @@
+# Dependências
+node_modules/
+
+# Banco de dados local e arquivos de trabalho (T-05: banco com dados reais nunca é commitado)
+data/*
+!data/.gitkeep
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Segredos / configuração local
+.env
+.env.*
+!.env.example
+
+# Logs e temporários
+*.log
+npm-debug.log*
+tmp/
+.tmp/
+
+# Sistema operacional / editor
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/

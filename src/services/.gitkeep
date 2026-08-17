@@ -1,0 +1,3 @@
+# Regras de negocio (calculo de saldo, alocacao de pagamentos, conciliacao).
+# Implementado: ledger.js (movimento financeiro manual + alocacao em competencias).
+# Ainda nao implementado: credito/debito, estorno, comprovante, conciliacao.

@@ -52,6 +52,28 @@ function parseInt8Seguro(value) {
 
 pg.types.setTypeParser(PG_TYPE_INT8, parseInt8Seguro);
 
+// ---------------------------------------------------------------------------
+// DATA CIVIL — `DATE` nunca vira instante (M-10)
+// ---------------------------------------------------------------------------
+//
+// `movimento_financeiro.data`, `ajuste_credito_debito.data` e `comprovante.data`
+// sao DATE: data civil do fato financeiro, sem hora e sem fuso (ver o cabecalho
+// de `migrations/postgresql/001_initial_schema.sql`).
+//
+// O parser PADRAO do `node-postgres` converte `DATE` em um `Date` do JavaScript
+// na MEIA-NOITE LOCAL do processo. Isso reintroduz exatamente o fuso que a
+// escolha do tipo eliminou, e o estrago e silencioso: em uma maquina a leste de
+// Greenwich, '2026-01-10' vira `2026-01-09T21:00:00Z`, e qualquer serializacao
+// em UTC devolve o DIA ANTERIOR. Um pagamento pode mudar de dia, de mes e
+// portanto de COMPETENCIA (M-10) por causa de onde o servidor esta.
+//
+// Devolver o texto do PostgreSQL como veio ('YYYY-MM-DD') nao envolve fuso
+// nenhum, e e o mesmo formato que o SQLite ja guarda. Fuso so entra em cena
+// quando alguem decidir, explicitamente, que aquela data e um instante.
+const PG_TYPE_DATE = 1082;
+
+pg.types.setTypeParser(PG_TYPE_DATE, (value) => value);
+
 /** Configuracao padrao do pool. Nenhum valor exige servico externo (T-03). */
 const POOL_DEFAULTS = Object.freeze({
   max: 10,
@@ -197,4 +219,6 @@ module.exports = {
   withTransaction,
   parseInt8Seguro,
   POOL_DEFAULTS,
+  PG_TYPE_INT8,
+  PG_TYPE_DATE,
 };

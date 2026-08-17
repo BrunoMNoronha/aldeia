@@ -64,14 +64,12 @@ const ESTADO_NAO_IDENTIFICADO = 'nao_identificado';
 /**
  * Paginacao por LIMIT/OFFSET, com teto: uma fila operacional e lida em pagina,
  * nunca inteira de uma vez. Sem cursor nesta fase.
+ *
+ * Os valores moram em `./paginacao` desde a PG-2B1, para que a trilha PostgreSQL
+ * possa reutiliza-los sem importar este arquivo (que carrega o driver SQLite).
+ * A reexportacao permanece: quem ja lia `PAGINACAO` daqui continua funcionando.
  */
-const PAGINACAO = Object.freeze({
-  limitePadrao: 50,
-  limiteMinimo: 1,
-  limiteMaximo: 200,
-  offsetPadrao: 0,
-  offsetMinimo: 0,
-});
+const { PAGINACAO } = require('./paginacao');
 
 const ACAO_MOVIMENTO_CRIADO = 'movimento_financeiro.criado';
 const ACAO_ALOCACAO_CRIADA = 'alocacao.criada';

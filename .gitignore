@@ -16,6 +16,27 @@ data/*
 .env.*
 !.env.example
 
+# Fontes legadas privadas (dados pessoais/financeiros reais)
+#
+# A planilha e a ficha de cadastro da ACASA contêm dados reais de associados e
+# NÃO podem ficar versionadas em repositório público. Elas continuam existindo
+# localmente — a importação (`npm run import:legacy`) lê o arquivo do disco por
+# caminho, nunca do Git. Metadados e SHA-256 em docs/legacy/source-manifest.md.
+controle-de-pagamento.xlsx
+ficha-de-cadastro.pdf
+private/
+*.xlsx
+*.xlsm
+*.csv
+*.pdf
+# Exceção deliberada: fontes de baseline normativo não são dado pessoal.
+!KB-BASELINE-ACASA-*.pdf
+
+# Build do Next.js
+.next/
+out/
+next-env.d.ts
+
 # Logs e temporários
 *.log
 npm-debug.log*

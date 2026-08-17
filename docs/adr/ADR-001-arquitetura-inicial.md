@@ -1,8 +1,32 @@
 # ADR-001 — Arquitetura inicial do MVP
 
-- **Status:** proposto (aguardando aceite do responsável pelo projeto)
+- **Status:** **aceito — parcialmente superseded** (ver abaixo)
 - **Data:** 2026-08-16
-- **Baseline normativo:** `KB-BASELINE-ACASA-v1.0.pdf` (v1.0 — FROZEN)
+- **Baseline normativo à época:** `KB-BASELINE-ACASA-v1.0.pdf` (v1.0 — FROZEN, **imutável**)
+- **Baseline vigente hoje:** `KB-BASELINE-ACASA-v2.0.pdf` (FROZEN — autoridade normativa canônica)
+- **Superseded parcialmente por:** [ADR-002](ADR-002-nextjs-app-router.md), [ADR-003](ADR-003-postgresql-persistencia.md)
+
+> **Nota de leitura.** Este ADR foi **aceito e implementado**, e é o registro
+> histórico da arquitetura do MVP. **O texto abaixo não foi reescrito** — ele
+> descreve o que foi decidido em 2026-08-16, sob o baseline v1.0.
+>
+> Dois conjuntos de decisões deixaram de valer:
+>
+> | Decisão original | Superseded por | O que passa a valer |
+> |---|---|---|
+> | **Express**, HTML por concatenação de strings, ausência de build step, `src/server.js` como entry point (seção 1) | [ADR-002](ADR-002-nextjs-app-router.md) | Next.js 16 App Router, React, `npm run build` obrigatório, `next start`. |
+> | **SQLite** via `better-sqlite3`, PRAGMAs, `DB_PATH`/`data/acasa.sqlite`, `withTransaction` com `BEGIN IMMEDIATE`, acesso síncrono (seções 2 e 3) | [ADR-003](ADR-003-postgresql-persistencia.md) | PostgreSQL com `pg` e pool, `DATABASE_URL`, `BEGIN`/`COMMIT`/`ROLLBACK`, acesso assíncrono. |
+>
+> **Nenhuma das duas substituições terminou.** Express ainda serve `/api/*` e
+> `/associados`; SQLite ainda é o banco do runtime. Ver
+> [`docs/adr/README.md`](README.md) e
+> [`docs/architecture/overview.md`](../architecture/overview.md).
+>
+> **Permanece integralmente válido:** migrations SQL versionadas sem ORM com
+> checksum e imutabilidade (T-05, seção 3), dinheiro em centavos inteiros (T-06,
+> seção 4), preservação histórica por inativação (M-09, seção 5), `node:test`
+> como runner (seção 6), a separação `domain`/`services`/`db`/`import` e toda a
+> seção "Fora de escopo desta decisão", com seus pontos TO CONFIRM.
 
 ## Contexto
 

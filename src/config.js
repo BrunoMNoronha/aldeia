@@ -19,7 +19,12 @@ function resolveDbPath(env = process.env) {
   if (!raw || raw.trim() === '') return DEFAULT_DB_PATH;
   const value = raw.trim();
   if (value === ':memory:') return value;
-  return path.resolve(ROOT_DIR, value);
+  // O comentario `turbopackIgnore` e um adaptador para o build do Next.js, sem
+  // nenhum efeito em tempo de execucao: o caminho vem de DB_PATH e so pode ser
+  // resolvido rodando, entao a analise estatica do Turbopack incluiria o projeto
+  // INTEIRO — `data/` e a planilha legada junto — no rastreamento do servidor.
+  // O banco continua sendo resolvido exatamente como antes.
+  return path.resolve(/* turbopackIgnore: true */ ROOT_DIR, value);
 }
 
 function resolvePort(env = process.env) {

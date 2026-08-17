@@ -15,8 +15,11 @@ Fonte normativa: `KB-BASELINE-ACASA-v1.0.pdf` (v1.0 — FROZEN).
 ```bash
 npm install
 npm run migrate
+npm run build
 npm start
 ```
+
+Em desenvolvimento, `npm run dev` dispensa o `build`.
 
 Depois, verifique:
 
@@ -27,15 +30,29 @@ curl http://localhost:3000/health
 Resposta esperada:
 
 ```json
-{ "status": "ok", "database": "ok", "migrations": 2 }
+{ "status": "ok", "database": "ok", "migrations": 3 }
 ```
+
+## Migração para Next.js (em andamento)
+
+A aplicação web está migrando de Express para **Next.js 16 (App Router)** —
+ver [`docs/adr/ADR-002-nextjs-app-router.md`](docs/adr/ADR-002-nextjs-app-router.md).
+
+A migração é incremental e, **nesta fase (NX-0), o Next.js serve apenas `/` e
+`/health`**. As APIs `/api/*` e as telas `/associados` ainda pertencem ao
+servidor Express, que continua no repositório e executável por
+`npm run start:express` enquanto NX-1 e NX-2 não concluem.
+
+Nada disso alterou schema, migrations ou regra financeira.
 
 ## Scripts
 
 | Comando | O que faz |
 |---|---|
-| `npm start` | Sobe a aplicação web |
-| `npm run dev` | Sobe com `--watch` (recarrega ao salvar) |
+| `npm run dev` | Sobe o Next.js em desenvolvimento |
+| `npm run build` | Build de produção do Next.js |
+| `npm start` | Sobe o Next.js em produção (exige `npm run build` antes) |
+| `npm run start:express` | Sobe o servidor Express legado (transitório — sai em NX-3) |
 | `npm run migrate` | Cria/atualiza o banco a partir das migrations |
 | `npm run import:legacy` | Importa um `.xlsx` legado para a camada bruta |
 | `npm run legacy:associados` | Materializa associados a partir das colunas A/B de uma importação |

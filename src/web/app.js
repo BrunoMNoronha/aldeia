@@ -3,6 +3,7 @@
 const express = require('express');
 
 const { getDatabase } = require('../db/connection');
+const { verificarSaude } = require('../db/health');
 const ledger = require('../services/ledger');
 const comprovantes = require('../services/comprovantes');
 const associadosRouter = require('./routes/associados');
@@ -103,30 +104,12 @@ function createApp({ db = null } = {}) {
   app.use(express.json());
 
   // Health check: prova que a aplicacao web esta de pe e que o SQLite responde.
+  // A sonda mora em `src/db/health.js` porque durante a migracao (NX-0) o mesmo
+  // contrato tambem e servido pelo Route Handler `app/health/route.js`: um unico
+  // lugar decide o que /health responde, nos dois transportes.
   app.get('/health', (req, res) => {
-    let database = 'ok';
-    let migrations = null;
-
-    try {
-      const connection = resolveDb();
-      connection.prepare('SELECT 1').get();
-      const row = connection
-        .prepare(
-          "SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'table' AND name = 'schema_migration'"
-        )
-        .get();
-      migrations =
-        row.total === 0
-          ? 0
-          : connection.prepare('SELECT COUNT(*) AS total FROM schema_migration').get().total;
-    } catch {
-      database = 'erro';
-    }
-
-    if (database !== 'ok') {
-      return res.status(503).json({ status: 'erro', database });
-    }
-    return res.json({ status: 'ok', database, migrations });
+    const { saudavel, corpo } = verificarSaude(resolveDb);
+    return res.status(saudavel ? 200 : 503).json(corpo);
   });
 
   // --- ledger financeiro (Fase 2A) -----------------------------------------

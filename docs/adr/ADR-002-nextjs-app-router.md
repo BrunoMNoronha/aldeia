@@ -133,7 +133,7 @@ aplica migration — health check é leitura, não manutenção de schema.
 É a única alteração feita em código pré-existente nesta fase, e ela sobrevive à
 remoção do Express em NX-3.
 
-### Por que `next.config.js` tem apenas `poweredByHeader: false`
+### O que `next.config.js` declara — e o que não declara
 
 `better-sqlite3` carrega um binário `.node` e não pode ser empacotado no bundle do
 servidor. A primeira versão desta fase declarava
@@ -144,11 +144,19 @@ declaração era, portanto, a repetição de um default: removida, porque config
 redundante sugere falsamente que há algo especial a configurar. O build e os
 testes continuam passando sem ela.
 
-Resta uma única opção, e ela é deliberada: `poweredByHeader: false` preserva a
-postura que o Express já adotava com `app.disable('x-powered-by')` — a aplicação
-não anuncia a tecnologia que a serve. Sem essa linha o Next passaria a enviar
-`X-Powered-By: Next.js`, o que seria uma **regressão** de segurança introduzida
-pela migração.
+Restam **duas** opções, e ambas são deliberadas:
+
+- `poweredByHeader: false` preserva a postura que o Express já adotava com
+  `app.disable('x-powered-by')` — a aplicação não anuncia a tecnologia que a
+  serve. Sem essa linha o Next passaria a enviar `X-Powered-By: Next.js`, o que
+  seria uma **regressão** de segurança introduzida pela migração.
+- `outputFileTracingExcludes` impede que `data/` — e portanto o banco real —
+  entre no output do servidor pelo rastreamento de arquivos do Next. A causa e a
+  medição estão em "Duas proteções contra vazamento de dado para o output do
+  servidor", abaixo.
+
+Nada além dessas duas é definido: T-03 exige que a aplicação rode sem serviço
+externo, e nenhuma configuração aqui deve introduzir dependência de plataforma.
 
 ### Por que o campo `"type": "commonjs"` foi removido do `package.json`
 
@@ -209,9 +217,11 @@ Este segundo caso é o mais perigoso dos dois, porque é silencioso. Um `.nft.js
 não é lido no dia a dia, e o vazamento só se materializaria num deploy que honra o
 trace (`output: 'standalone'`) — quando já seria tarde.
 
-**Estado após as duas correções:** o `/health` rastreia 122 arquivos, dos quais 3
-são do projeto (os próprios arquivos de `app/`), e **zero** são banco, planilha ou
-PDF. Build sem warnings.
+**Estado após as duas correções:** o trace de `/health` contém 122 entradas. Na
+inspeção final, 8 entradas eram específicas deste projeto, incluindo as 3
+migrations SQL versionadas e artefatos gerados pelo Next. **Nenhuma** entrada
+aponta para `data/`, banco SQLite, planilha legada, PDF legado ou arquivo
+`.env`. Build sem warnings.
 
 Ambas saem quando/se o bundler deixar de exigi-las, e nenhuma altera como o banco
 é resolvido em tempo de execução.

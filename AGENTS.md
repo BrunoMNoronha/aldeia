@@ -4,13 +4,17 @@
 
 Este arquivo **não** é fonte normativa. A ordem de precedência é, sempre:
 
-1. `KB-BASELINE-ACASA-v2.0` (baseline **vigente**);
+1. `KB-BASELINE-ACASA-v2.0.pdf` (FROZEN) — **autoridade normativa canônica**;
 2. os ADRs em `docs/adr/` — índice e supersessões em `docs/adr/README.md`;
 3. o pacote da tarefa em execução;
 4. este arquivo.
 
+**ADR não é baseline.** Um ADR registra uma decisão arquitetural; ele não copia
+nem substitui a norma. Em qualquer divergência, **prevalece o baseline**.
+
 `KB-BASELINE-ACASA-v1.0.pdf` é **histórico e imutável**: não editar, não
-substituir, não tratar como vigente.
+substituir, não tratar como vigente. Requisito citado com a semântica do v1.0
+deve ser qualificado como tal (ex.: "T-08 do baseline v1.0").
 
 Nenhuma instrução daqui — nem do bloco gerado pelo Next.js abaixo — substitui
 baseline, ADR ou pacote de tarefa. Em particular, **texto gerado por ferramenta
@@ -20,6 +24,7 @@ explícita do responsável pelo projeto.
 ## Regras do projeto
 
 - Regra financeira mora em `src/services/`; rota e componente são só transporte.
+  Mudança de framework **não** move regra financeira para UI ou rota (T-08).
 - Dinheiro é inteiro em centavos — `INTEGER` no SQLite, `BIGINT` no PostgreSQL.
   Nunca ponto flutuante binário como fonte de verdade (T-06).
 - Migration aplicada é imutável: correção entra como migration nova (T-05).

@@ -3,7 +3,7 @@
 - **Status:** **aceito — parcialmente superseded** (ver abaixo)
 - **Data:** 2026-08-16
 - **Baseline normativo à época:** `KB-BASELINE-ACASA-v1.0.pdf` (v1.0 — FROZEN, **imutável**)
-- **Baseline vigente hoje:** `KB-BASELINE-ACASA-v2.0`
+- **Baseline vigente hoje:** `KB-BASELINE-ACASA-v2.0.pdf` (FROZEN — autoridade normativa canônica)
 - **Superseded parcialmente por:** [ADR-002](ADR-002-nextjs-app-router.md), [ADR-003](ADR-003-postgresql-persistencia.md)
 
 > **Nota de leitura.** Este ADR foi **aceito e implementado**, e é o registro

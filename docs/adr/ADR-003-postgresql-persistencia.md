@@ -2,8 +2,8 @@
 
 - **Status:** **aceito**. Fases concluídas: **PG-0** (governança) + **PG-1** (fundação paralela).
 - **Data:** 2026-08-17
-- **Baseline normativo vigente:** `KB-BASELINE-ACASA-v2.0` — produzido pelas alterações
-  normativas redigidas neste ADR (ver "Alterações normativas", abaixo)
+- **Baseline normativo aplicável:** `KB-BASELINE-ACASA-v2.0.pdf` (FROZEN) — **autoridade
+  normativa canônica**. Este ADR é o registro da decisão arquitetural, **não** o baseline.
 - **Baseline anterior:** `KB-BASELINE-ACASA-v1.0.pdf` (v1.0 — FROZEN, **imutável**, não editado)
 - **Relação com ADR-001 e ADR-002:** substitui parcialmente (ver abaixo)
 - **Superseded by:** —
@@ -31,8 +31,13 @@ pontos em conflito direto com a troca de banco.
 
 - **T-01** — Node.js como runtime;
 - **T-06** — dinheiro nunca depende de ponto flutuante binário;
-- **T-08** — framework web é decisão de implementação; o ADR-002 (Next.js 16
-  App Router) segue valendo, e a migração NX-1…NX-3 é independente desta;
+- **T-08** — separação entre domínio, persistência, importação e transporte web:
+  trocar o banco **não** move regra financeira para rota ou componente, e a regra
+  continua em `src/services/`. O ADR-002 (Next.js 16 App Router, **APPROVED** por
+  A-01) segue valendo, e a migração NX-1…NX-3 é independente desta;
+  <br>*(no baseline v1.0, vigente quando este ADR foi escrito, o T-08 dizia que
+  framework web era decisão de implementação; o v2.0 o reformulou como a exigência
+  de camadas acima.)*
 - **M-01 a M-10** e **F-01 a F-11**, sem exceção;
 - migrations SQL versionadas, sem ORM, com checksum e imutabilidade do que já
   foi aplicado (T-05);
@@ -57,8 +62,9 @@ humana e já está tomada; este ADR a registra e delimita.
 
 O ponto delicado é que **a decisão altera requisitos técnicos FROZEN do baseline
 v1.0** — o que os ADRs anteriores nunca precisaram fazer, porque tratavam de
-pontos que o baseline deixava explicitamente em aberto (T-08). Daí a existência
-da seção "Alterações normativas propostas", abaixo.
+pontos que o baseline v1.0 deixava explicitamente em aberto (**T-08 do baseline
+v1.0**, que declarava framework web como decisão de implementação). Daí a
+existência da seção "Alterações normativas", abaixo.
 
 **Nenhuma regra funcional ou de domínio muda.** Esta é uma decisão de
 persistência, não de negócio.
@@ -165,14 +171,15 @@ Até PG-6, reverter é apagar código: nada em produção depende do PostgreSQL.
 
 # Alterações normativas para `KB-BASELINE-ACASA-v2.0`
 
-> **Estado desta seção.** Ela foi redigida como *proposta* e **foi adotada**: o
-> responsável pelo projeto declarou `KB-BASELINE-ACASA-v2.0` como o baseline
-> vigente, com o conteúdo abaixo. O texto permanece como está por ser o registro
-> normativo do que mudou.
+> **Estado desta seção.** Ela foi redigida como *proposta* e a decisão **foi
+> adotada**: o `KB-BASELINE-ACASA-v2.0.pdf` foi emitido e está FROZEN. O texto
+> permanece aqui como **registro histórico da proposta que originou o v2.0**.
 >
-> **Pendência de governança:** o PDF do v2.0 não está versionado neste
-> repositório, então esta seção é hoje a fonte textual do que o v2.0 determina.
-> Publicar o PDF — ou registrar onde ele é mantido — continua pendente.
+> **Esta seção não é o baseline.** A autoridade normativa canônica é o
+> `KB-BASELINE-ACASA-v2.0.pdf`; em qualquer divergência entre o que está escrito
+> abaixo e o PDF, **prevalece o PDF**. O v2.0 emitido inclui ao menos uma
+> alteração que **não** consta desta proposta — a reformulação do **T-08** (ver
+> "O que esta proposta NÃO altera", ao final).
 
 **O `KB-BASELINE-ACASA-v1.0.pdf` é histórico, imutável e NÃO foi editado,
 sobrescrito nem substituído.** Ele permanece como o registro do que valia antes.
@@ -210,8 +217,23 @@ Todo critério global do v1.0 que mencione **SQLite** passa a mencionar
 ## O que esta proposta NÃO altera
 
 **Nenhuma regra funcional ou de domínio.** Permanecem FROZEN, com o texto
-original do v1.0: **T-01**, **T-06**, **T-08**, **M-01 a M-10** e **F-01 a
-F-11**. Nenhum ponto **TO CONFIRM** é resolvido por esta proposta.
+original do v1.0: **T-01**, **T-06**, **M-01 a M-10** e **F-01 a F-11**. Nenhum
+ponto **TO CONFIRM** é resolvido por esta proposta.
+
+> **Nota corretiva (posterior à redação desta seção).** O **T-08 foi
+> reformulado** no baseline v2.0 emitido, e portanto **não** permanece com o
+> texto do v1.0 — ao contrário do que esta lista afirmava originalmente. A
+> reformulação **não parte desta proposta** e é registrada aqui apenas para
+> remover a ambiguidade:
+>
+> | | T-08 |
+> |---|---|
+> | **v1.0** | Framework web é decisão de implementação. |
+> | **v2.0 (vigente)** | O sistema deve manter separação entre domínio, persistência, importação e transporte web; mudança de framework não pode mover regra financeira para componentes ou rotas. |
+>
+> O texto normativo canônico é o do `KB-BASELINE-ACASA-v2.0.pdf`. A adoção do
+> **Next.js 16 App Router permanece APPROVED** por **A-01** e pelo
+> [ADR-002](ADR-002-nextjs-app-router.md).
 
 ---
 

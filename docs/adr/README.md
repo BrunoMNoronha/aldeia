@@ -10,7 +10,7 @@ histórico, e o que muda é o *status* e a nota de supersessão.
 |---|---|---|---|---|---|---|
 | [ADR-001](ADR-001-arquitetura-inicial.md) | Arquitetura inicial do MVP | **Aceito — parcialmente superseded** | 2026-08-16 | — | ADR-002 (Express, UI, build step), ADR-003 (SQLite, `better-sqlite3`, PRAGMAs, `BEGIN IMMEDIATE`) | Node.js + Express + SQLite, migrations SQL versionadas sem ORM, dinheiro em centavos inteiros, inativação em vez de exclusão. |
 | [ADR-002](ADR-002-nextjs-app-router.md) | Migração incremental para Next.js (App Router) | **Aceito — parcialmente superseded** | 2026-08-16 | ADR-001 (framework web, direção de UI, ausência de build step, entry point) | ADR-003 (as partes que reafirmavam SQLite e `better-sqlite3`) | Express → Next.js 16 App Router em quatro fases (NX-0…NX-3). Transporte apenas; nenhuma regra financeira muda. |
-| [ADR-003](ADR-003-postgresql-persistencia.md) | Adotar PostgreSQL como persistência principal | **Aceito** | 2026-08-17 | ADR-001 e ADR-002 (SQLite como persistência, `DB_PATH`, PRAGMAs, `BEGIN IMMEDIATE`, acesso síncrono, T-03 sem serviço externo) | — | SQLite → PostgreSQL com driver `pg`, sem ORM, em oito fases (PG-0…PG-7). Base normativa do baseline v2.0. |
+| [ADR-003](ADR-003-postgresql-persistencia.md) | Adotar PostgreSQL como persistência principal | **Aceito** | 2026-08-17 | ADR-001 e ADR-002 (SQLite como persistência, `DB_PATH`, PRAGMAs, `BEGIN IMMEDIATE`, acesso síncrono, T-03 sem serviço externo) | — | SQLite → PostgreSQL com driver `pg`, sem ORM, em oito fases (PG-0…PG-7). Registro da decisão que motivou o baseline v2.0. |
 
 ## Supersessões, em detalhe
 
@@ -31,10 +31,20 @@ ADR-002  T-03 sem serviço externo ────────► ADR-003  PostgreS
 ```
 
 **Permanece válido em todos eles**, e nenhum ADR toca: T-01 (Node.js), T-06
-(dinheiro sem ponto flutuante), T-08 (framework web é decisão de implementação),
+(dinheiro sem ponto flutuante), **T-08** — que no baseline vigente v2.0 exige a
+**separação entre domínio, persistência, importação e transporte web**, e proíbe
+que uma mudança de framework mova regra financeira para componentes ou rotas —,
 M-01 a M-10, F-01 a F-11, migrations versionadas com checksum e imutabilidade
 (T-05), a separação `domain`/`services`/`db`/`import`, `node:test` como runner e
 **todos os pontos TO CONFIRM**, que continuam TO CONFIRM.
+
+> **Atenção ao T-08.** No baseline **v1.0** o T-08 dizia que *framework web é
+> decisão de implementação* — é essa formulação, e só ela, que aparece no
+> contexto histórico do ADR-002 e do ADR-003. No **v2.0** o T-08 passou a ser
+> uma exigência de **arquitetura em camadas**, e não uma liberdade de escolha.
+> A escolha do **Next.js 16 App Router permanece APPROVED** por **A-01** e pelo
+> [ADR-002](ADR-002-nextjs-app-router.md); o que o T-08 vigente governa é onde a
+> regra financeira pode morar — em `src/services/`, nunca em rota ou componente.
 
 ## Estado das migrações
 
@@ -53,17 +63,23 @@ do runtime**. Ver [`../architecture/overview.md`](../architecture/overview.md).
 A ordem de precedência do projeto é: **baseline → ADRs → pacote da tarefa →
 demais documentos**.
 
-- **`KB-BASELINE-ACASA-v2.0`** é o baseline **vigente**. As alterações
-  normativas que o produzem (T-02, T-03, T-05, T-07 e os critérios globais de
-  aceite) estão redigidas na seção *"Alterações normativas propostas"* do
-  [ADR-003](ADR-003-postgresql-persistencia.md).
+- **`KB-BASELINE-ACASA-v2.0.pdf`** (FROZEN) é a **autoridade normativa canônica
+  vigente**. Em qualquer divergência entre um ADR e o baseline, **o baseline
+  prevalece**.
 - **`KB-BASELINE-ACASA-v1.0.pdf`** permanece **histórico e imutável**. Não é
-  editado nem substituído.
+  editado nem substituído, e não é tratado como vigente.
 
-> **Nota de rastreabilidade.** Nenhum dos dois PDFs está versionado neste
-> repositório — o `docs/` contém apenas os ADRs. A referência ao baseline é,
-> hoje, textual. Publicar o PDF do v2.0 (ou registrar onde ele é mantido) é uma
-> pendência de governança, não uma decisão de arquitetura.
+**ADR não é baseline.** Um ADR registra uma **decisão arquitetural** — o
+contexto, as alternativas, as consequências e o plano de execução. Ele **não
+substitui, não copia e não reproduz normativamente** o baseline. Em particular,
+o [ADR-003](ADR-003-postgresql-persistencia.md) é o **registro arquitetural da
+decisão e da migração para PostgreSQL**; a norma que essa decisão passou a
+observar está no `KB-BASELINE-ACASA-v2.0.pdf`, não no ADR.
+
+> **Nota de rastreabilidade.** Os PDFs de baseline não são versionados neste
+> repositório — `docs/` contém apenas os ADRs. Consultar o texto normativo exige
+> o PDF canônico. Registrar onde o baseline é mantido é uma pendência de
+> governança, não uma decisão de arquitetura.
 
 ## Formato
 
@@ -72,7 +88,7 @@ Cada ADR abre com um bloco de metadados:
 ```markdown
 - **Status:** aceito | proposto | aceito — parcialmente superseded | revogado
 - **Data:** AAAA-MM-DD
-- **Baseline normativo vigente:** ...
+- **Baseline normativo aplicável:** ... (o PDF canônico, nunca este documento)
 - **Relação com ADRs anteriores:** ...
 ```
 

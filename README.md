@@ -3,9 +3,10 @@
 Sistema de controle de pagamentos da ACASA, substituindo o controle mantido em
 planilha.
 
-Fonte normativa vigente: **`KB-BASELINE-ACASA-v2.0`**. O `KB-BASELINE-ACASA-v1.0.pdf`
-permanece histórico e imutável. A ordem de precedência é **baseline → ADRs →
-pacote da tarefa → demais documentos**.
+Autoridade normativa canônica: **`KB-BASELINE-ACASA-v2.0.pdf`** (FROZEN). O
+`KB-BASELINE-ACASA-v1.0.pdf` permanece histórico e imutável. A ordem de
+precedência é **baseline → ADRs → pacote da tarefa → demais documentos**: os
+ADRs registram decisões arquiteturais e **não substituem o baseline**.
 
 ## Requisitos
 

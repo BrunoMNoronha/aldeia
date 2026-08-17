@@ -3,7 +3,7 @@
 - **Status:** **aceito — parcialmente superseded** (ver abaixo). Fase concluída: **NX-0**.
 - **Data:** 2026-08-16
 - **Baseline normativo à época:** `KB-BASELINE-ACASA-v1.0.pdf` (v1.0 — FROZEN, **imutável**)
-- **Baseline vigente hoje:** `KB-BASELINE-ACASA-v2.0`
+- **Baseline vigente hoje:** `KB-BASELINE-ACASA-v2.0.pdf` (FROZEN — autoridade normativa canônica)
 - **Relação com o ADR-001:** substitui parcialmente (ver seção abaixo)
 - **Superseded parcialmente por:** [ADR-003](ADR-003-postgresql-persistencia.md)
 
@@ -85,8 +85,19 @@ telas de conferência com estado (filas de pendência, identificação de depós
 comprovantes). Montar HTML por concatenação de strings não escala para isso, e
 adotar uma SPA separada criaria dois processos e dois modelos de erro.
 
-O baseline **não** fixa framework web: **T-08** o declara explicitamente decisão de
-implementação. Trocar Express por Next.js não toca nenhuma regra FROZEN.
+O baseline **v1.0** — vigente à época desta decisão — **não** fixa framework web:
+o **T-08 do baseline v1.0** o declara explicitamente decisão de implementação.
+Trocar Express por Next.js não toca nenhuma regra FROZEN.
+
+> **Nota corretiva.** No baseline **v2.0**, hoje vigente, o T-08 tem outra
+> semântica: exige **separação entre domínio, persistência, importação e
+> transporte web** e proíbe que uma mudança de framework mova regra financeira
+> para componentes ou rotas. Isso **não invalida esta decisão** — a adoção do
+> **Next.js 16 App Router permanece APPROVED** por **A-01** e por este ADR. O
+> que muda é o fundamento: a escolha do framework deixou de ser justificada por
+> uma liberdade do T-08 e passa a ser governada por **A-01**, com o T-08 vigente
+> exigindo que a regra financeira continue em `src/services/` — que é
+> exatamente o que esta migração preserva.
 
 ## Decisão
 

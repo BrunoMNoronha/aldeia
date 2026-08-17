@@ -1,9 +1,35 @@
 # ADR-002 — Migração incremental para Next.js (App Router)
 
-- **Status:** proposto (aguardando aceite do responsável pelo projeto)
+- **Status:** **aceito — parcialmente superseded** (ver abaixo). Fase concluída: **NX-0**.
 - **Data:** 2026-08-16
-- **Baseline normativo:** `KB-BASELINE-ACASA-v1.0.pdf` (v1.0 — FROZEN)
+- **Baseline normativo à época:** `KB-BASELINE-ACASA-v1.0.pdf` (v1.0 — FROZEN, **imutável**)
+- **Baseline vigente hoje:** `KB-BASELINE-ACASA-v2.0`
 - **Relação com o ADR-001:** substitui parcialmente (ver seção abaixo)
+- **Superseded parcialmente por:** [ADR-003](ADR-003-postgresql-persistencia.md)
+
+> **Nota de leitura.** A decisão de migrar para Next.js foi **aceita** e a fase
+> NX-0 está implementada. **O texto abaixo não foi reescrito**: ele registra o
+> contexto de 2026-08-16, sob o baseline v1.0, quando SQLite ainda era a
+> persistência decidida.
+>
+> **O que deixou de valer neste ADR**, por força do
+> [ADR-003](ADR-003-postgresql-persistencia.md): todas as passagens que
+> reafirmam **SQLite como persistência** — a seção "O que permanece integralmente
+> válido no ADR-001" (`better-sqlite3`, PRAGMAs, `DB_PATH`, `BEGIN IMMEDIATE`,
+> T-03 sem serviço externo), as "Restrições assumidas" que declaram SQLite
+> obrigatório, e as menções a leitura síncrona do banco em Server Components.
+> A persistência oficial passa a ser **PostgreSQL** via `pg`, com acesso
+> assíncrono, e **PostgreSQL passa a ser um serviço externo obrigatório**.
+>
+> **O que continua valendo integralmente:** tudo que é sobre **transporte** — a
+> escolha do Next.js 16 App Router, as fases NX-0…NX-3, a separação transporte ×
+> domínio, `runtime = 'nodejs'` em todo código que toque o banco, a recusa a
+> exigir Vercel, a permanência em JavaScript, e as **duas proteções contra
+> vazamento de dado para o output do servidor** (`turbopackIgnore` e
+> `outputFileTracingExcludes`), que seguem necessárias e verificadas.
+>
+> **A migração não terminou.** NX-1, NX-2 e NX-3 estão pendentes: Express ainda
+> serve `/api/*` e `/associados`.
 
 ## Relação com o ADR-001
 

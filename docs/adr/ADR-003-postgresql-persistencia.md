@@ -1,10 +1,18 @@
 # ADR-003 — Adotar PostgreSQL como persistência principal
 
-- **Status:** proposto (aguardando aceite do responsável pelo projeto)
+- **Status:** **aceito**. Fases concluídas: **PG-0** (governança) + **PG-1** (fundação paralela).
 - **Data:** 2026-08-17
-- **Baseline normativo vigente:** `KB-BASELINE-ACASA-v1.0.pdf` (v1.0 — FROZEN, **imutável**)
+- **Baseline normativo vigente:** `KB-BASELINE-ACASA-v2.0` — produzido pelas alterações
+  normativas redigidas neste ADR (ver "Alterações normativas", abaixo)
+- **Baseline anterior:** `KB-BASELINE-ACASA-v1.0.pdf` (v1.0 — FROZEN, **imutável**, não editado)
 - **Relação com ADR-001 e ADR-002:** substitui parcialmente (ver abaixo)
-- **Fase implementada por este ADR:** PG-0 (governança) + PG-1 (fundação paralela)
+- **Superseded by:** —
+
+> **Estado da migração.** A decisão está aceita e a fundação existe, mas
+> **PostgreSQL ainda não é o banco do runtime**. A camada `src/db/postgresql/` é
+> paralela e nenhum service, rota ou script a consome; todo acesso a dados
+> continua passando por SQLite até **PG-6**. Ver a tabela de fases em
+> "Estratégia de cutover".
 
 ## Relação com os ADRs anteriores
 
@@ -155,12 +163,19 @@ Até PG-6, reverter é apagar código: nada em produção depende do PostgreSQL.
 
 ---
 
-# Alterações normativas propostas para `KB-BASELINE-ACASA-v2.0`
+# Alterações normativas para `KB-BASELINE-ACASA-v2.0`
+
+> **Estado desta seção.** Ela foi redigida como *proposta* e **foi adotada**: o
+> responsável pelo projeto declarou `KB-BASELINE-ACASA-v2.0` como o baseline
+> vigente, com o conteúdo abaixo. O texto permanece como está por ser o registro
+> normativo do que mudou.
+>
+> **Pendência de governança:** o PDF do v2.0 não está versionado neste
+> repositório, então esta seção é hoje a fonte textual do que o v2.0 determina.
+> Publicar o PDF — ou registrar onde ele é mantido — continua pendente.
 
 **O `KB-BASELINE-ACASA-v1.0.pdf` é histórico, imutável e NÃO foi editado,
-sobrescrito nem substituído por esta tarefa.** Esta seção é uma **proposta
-textual versionada** para a futura emissão do baseline v2.0 — ela não altera o
-v1.0 e não tem efeito normativo enquanto o v2.0 não for emitido.
+sobrescrito nem substituído.** Ele permanece como o registro do que valia antes.
 
 > Nota: o repositório não possui convenção própria para fontes de baseline
 > (`docs/` contém apenas `docs/adr/`). Conforme a instrução da tarefa, a proposta

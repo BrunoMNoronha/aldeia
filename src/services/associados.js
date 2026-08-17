@@ -26,7 +26,6 @@
 
 const {
   LIMITE_PADRAO,
-  COLUNAS_ASSOCIADO,
   normalizarTexto,
   idInteiroPositivo,
   limiteValido,
@@ -34,6 +33,17 @@ const {
   mapearAssociado,
   montarListagem,
 } = require('./associados-contrato');
+
+/** Colunas lidas. Nomes de coluna do schema SQLite (`migrations/001_...sql`). */
+const COLUNAS_ASSOCIADO = `
+    id,
+    legacy_id,
+    nome,
+    status_cadastral,
+    legacy_status_code,
+    observacoes,
+    criado_em,
+    atualizado_em`;
 
 /**
  * Ordenacao deterministica: nome sem sensibilidade a caixa, desempate estavel

@@ -20,11 +20,12 @@ const assert = require('node:assert/strict');
 
 const {
   LIMITE_PADRAO,
-  ID_MAXIMO_INT4,
   listarAssociados,
   obterAssociado,
   obterAssociadoPorLegacyId,
 } = require('../src/services/associados-postgresql');
+// O teto do int4 e conhecimento do TIPO DA COLUNA, entao mora na persistencia.
+const { ID_MAXIMO_INT4 } = require('../src/db/postgresql/associados');
 const { runMigrations } = require('../src/db/postgresql/migrator');
 const { motivoSkip, schemaIsolado } = require('./helpers/postgres');
 

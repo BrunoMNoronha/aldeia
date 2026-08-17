@@ -23,20 +23,10 @@
 /** Teto padrao de linhas por consulta. A UI avisa quando ha mais. */
 const LIMITE_PADRAO = 500;
 
-/**
- * Colunas lidas, na ordem do contrato. Identicas nas duas trilhas: os nomes de
- * coluna do schema PostgreSQL (`migrations/postgresql/001_initial_schema.sql`)
- * reproduzem os do SQLite de proposito.
- */
-const COLUNAS_ASSOCIADO = `
-    id,
-    legacy_id,
-    nome,
-    status_cadastral,
-    legacy_status_code,
-    observacoes,
-    criado_em,
-    atualizado_em`;
+// Nao ha lista de colunas nem SQL aqui: nome de coluna e conhecimento de schema,
+// portanto de persistencia (T-08). Cada trilha declara a sua — a PostgreSQL em
+// `src/db/postgresql/associados.js`, a SQLite em `associados.js` enquanto ela
+// existir (o SQLite sai em PG-7).
 
 // --- normalizacao de entrada -------------------------------------------------
 
@@ -178,7 +168,6 @@ function montarListagem(linhas, teto, filtros) {
 
 module.exports = {
   LIMITE_PADRAO,
-  COLUNAS_ASSOCIADO,
   normalizarTexto,
   escaparLike,
   padraoContem,

@@ -233,12 +233,17 @@ test('nenhuma FK de entidade financeira usa ON DELETE CASCADE', { skip }, async 
     [schema]
   );
 
-  assert.ok(rows.length > 0, 'o schema precisa ter foreign keys');
+  assert.equal(rows.length, 12, 'as 12 foreign keys do schema precisam existir');
   for (const fk of rows) {
+    // `RESTRICT` e `NO ACTION` sao regras DISTINTAS no PostgreSQL (ele nao
+    // normaliza uma na outra) e as duas preservam o historico: nenhuma apaga
+    // filho junto com o pai. Todas as FKs deste schema declaram RESTRICT.
+    // O que nao pode existir e CASCADE, SET NULL ou SET DEFAULT — qualquer uma
+    // delas faria uma exclusao de pai alterar registro financeiro em silencio.
     assert.equal(
       fk.delete_rule,
-      'NO ACTION',
-      `${fk.table_name}.${fk.constraint_name} deveria ser RESTRICT/NO ACTION, e nao ${fk.delete_rule}`
+      'RESTRICT',
+      `${fk.table_name}.${fk.constraint_name} deveria ser RESTRICT, e nao ${fk.delete_rule}`
     );
   }
 });

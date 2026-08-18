@@ -1,0 +1,27 @@
+# TechLab+ Aldeia — ACASA — unit de producao (template versionado, sem secrets).
+# Instalado em /etc/systemd/system/aldeia.service. Segredos ficam somente em
+# /etc/aldeia/aldeia.env (root:aldeia 640), nunca nesta unit nem no Git.
+[Unit]
+Description=TechLab+ Aldeia — ACASA (Next.js, producao)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=aldeia
+Group=aldeia
+WorkingDirectory=/opt/aldeia/current
+EnvironmentFile=/etc/aldeia/aldeia.env
+# Loopback somente: a porta 3000 nunca e exposta a Internet; o nginx faz o proxy.
+ExecStart=/usr/bin/node /opt/aldeia/current/node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3000
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

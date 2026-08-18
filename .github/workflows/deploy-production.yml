@@ -1,0 +1,119 @@
+# Pipeline de producao — TechLab+ Aldeia / ACASA (ADR-004).
+#
+# Todo push efetivamente incorporado a `main` dispara este workflow. O job de
+# validacao prova que a revisao e implantavel (test + build, com PostgreSQL
+# efemero de CI para a suite ADR-003). O job de deploy conecta na VPS com chave
+# dedicada e implanta EXATAMENTE o GITHUB_SHA — mas somente quando a variavel
+# de Environment PROD_DEPLOY_ENABLED for 'true'.
+#
+# Gate PG-6 (ADR-003): enquanto o cutover PostgreSQL nao estiver consolidado,
+# PROD_DEPLOY_ENABLED permanece 'false' e o deploy live fica bloqueado de forma
+# explicita — automacao de deploy nao autoriza violar o baseline.
+name: deploy-production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Deploys de producao sao serializados; nunca cancelar um deploy no meio de
+# migration/restart.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validar revisao (test + build)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aldeia_ci
+          POSTGRES_PASSWORD: aldeia_ci
+          POSTGRES_DB: aldeia_ci_teste
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aldeia_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Banco efemero exclusivo do CI. DATABASE_URL nunca e definida aqui: a
+      # suite PostgreSQL so liga com TEST_DATABASE_URL (fail-closed, ADR-003).
+      TEST_DATABASE_URL: postgresql://aldeia_ci:aldeia_ci@127.0.0.1:5432/aldeia_ci_teste
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Testes (SQLite + PostgreSQL efemero)
+        run: npm test 2>&1 | tee test-output.log
+      - name: Resumo da suite (pass/fail/skip)
+        run: |
+          echo '## Resumo dos testes' >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo)' test-output.log >> "$GITHUB_STEP_SUMMARY" || true
+          skipped="$(grep -E '^# skipped' test-output.log | grep -oE '[0-9]+' || echo 0)"
+          echo "testes pulados: $skipped (esperado ~0 com TEST_DATABASE_URL definida)"
+      - run: npm run build
+
+  deploy:
+    name: Deploy producao (gate PG-6)
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Gate PROD_DEPLOY_ENABLED
+        if: vars.PROD_DEPLOY_ENABLED != 'true'
+        run: |
+          echo "::notice title=Deploy live bloqueado por gate explicito::PROD_DEPLOY_ENABLED=false — a infraestrutura de producao esta preparada e este pipeline esta ativo, mas o go-live aguarda a conclusao do cutover PG-6 (PostgreSQL como runtime, ADR-003). Nenhum acesso a VPS foi realizado nesta execucao."
+          echo "AMBIENTE_VPS_PREPARADO=sim | CI_CD_MAIN_CONFIGURADO=sim | PRODUCAO_ATIVA=nao (aguardando PG-6)"
+      - name: Preparar SSH (chave dedicada + host key verificada)
+        if: vars.PROD_DEPLOY_ENABLED == 'true'
+        env:
+          PROD_SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$PROD_SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+      - name: Deploy do SHA exato
+        if: vars.PROD_DEPLOY_ENABLED == 'true'
+        env:
+          PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          PROD_SSH_PORT: ${{ secrets.PROD_SSH_PORT }}
+          PROD_SSH_USER: ${{ secrets.PROD_SSH_USER }}
+        run: |
+          # O unico parametro externo enviado a VPS e o GITHUB_SHA, validado
+          # tambem no lado do servidor (^[0-9a-f]{40}$).
+          ssh \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -i ~/.ssh/deploy_key \
+            -p "$PROD_SSH_PORT" \
+            "$PROD_SSH_USER@$PROD_SSH_HOST" \
+            "/opt/aldeia/deploy-production.sh '$GITHUB_SHA'"
+      - name: Verificar SHA implantado
+        if: vars.PROD_DEPLOY_ENABLED == 'true'
+        env:
+          PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          PROD_SSH_PORT: ${{ secrets.PROD_SSH_PORT }}
+          PROD_SSH_USER: ${{ secrets.PROD_SSH_USER }}
+        run: |
+          ativo="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts -i ~/.ssh/deploy_key \
+            -p "$PROD_SSH_PORT" "$PROD_SSH_USER@$PROD_SSH_HOST" \
+            'basename "$(readlink -f /opt/aldeia/current)"')"
+          echo "SHA ativo na VPS: $ativo"
+          test "$ativo" = "$GITHUB_SHA"

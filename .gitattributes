@@ -1,0 +1,2 @@
+# Scripts executados na VPS (Linux) precisam de LF mesmo em checkout Windows.
+*.sh text eol=lf

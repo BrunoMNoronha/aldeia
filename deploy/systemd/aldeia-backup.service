@@ -1,0 +1,12 @@
+# Backup logico diario do PostgreSQL de producao (template versionado, sem secrets).
+# Instalado em /etc/systemd/system/aldeia-backup.service; disparado pelo timer.
+[Unit]
+Description=Backup pg_dump do banco aldeia_producao
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=aldeia
+Group=aldeia
+ExecStart=/usr/local/bin/aldeia-backup-postgresql

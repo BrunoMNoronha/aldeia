@@ -11,6 +11,7 @@ histórico, e o que muda é o *status* e a nota de supersessão.
 | [ADR-001](ADR-001-arquitetura-inicial.md) | Arquitetura inicial do MVP | **Aceito — parcialmente superseded** | 2026-08-16 | — | ADR-002 (Express, UI, build step), ADR-003 (SQLite, `better-sqlite3`, PRAGMAs, `BEGIN IMMEDIATE`) | Node.js + Express + SQLite, migrations SQL versionadas sem ORM, dinheiro em centavos inteiros, inativação em vez de exclusão. |
 | [ADR-002](ADR-002-nextjs-app-router.md) | Migração incremental para Next.js (App Router) | **Aceito — parcialmente superseded** | 2026-08-16 | ADR-001 (framework web, direção de UI, ausência de build step, entry point) | ADR-003 (as partes que reafirmavam SQLite e `better-sqlite3`) | Express → Next.js 16 App Router em quatro fases (NX-0…NX-3). Transporte apenas; nenhuma regra financeira muda. |
 | [ADR-003](ADR-003-postgresql-persistencia.md) | Adotar PostgreSQL como persistência principal | **Aceito** | 2026-08-17 | ADR-001 e ADR-002 (SQLite como persistência, `DB_PATH`, PRAGMAs, `BEGIN IMMEDIATE`, acesso síncrono, T-03 sem serviço externo) | — | SQLite → PostgreSQL com driver `pg`, sem ORM, em oito fases (PG-0…PG-7). Registro da decisão que motivou o baseline v2.0. |
+| [ADR-004](ADR-004-deploy-producao-vps.md) | Produção em VPS com CI/CD automático a partir da `main` | **Aceito** | 2026-08-18 | — | — | VPS + systemd + nginx + PostgreSQL 16 local; GitHub Actions dispara em push na `main`; release imutável por SHA; deploy live bloqueado por `PROD_DEPLOY_ENABLED=false` até o cutover PG-6. |
 
 ## Supersessões, em detalhe
 

@@ -1,0 +1,11 @@
+# Timer diario do backup PostgreSQL (03:30 hora local da VPS).
+[Unit]
+Description=Timer diario do backup do banco aldeia_producao
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

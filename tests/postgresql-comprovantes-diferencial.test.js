@@ -26,6 +26,7 @@ const postgresql = require('../src/services/comprovantes-postgresql');
 const { runMigrations } = require('../src/db/postgresql/migrator');
 const { createMigratedDb } = require('./helpers/temp-db');
 const { motivoSkip, schemaIsolado } = require('./helpers/postgres');
+const { ID_MAXIMO_INT4 } = require('../src/db/postgresql/tipos');
 
 const skip = motivoSkip();
 
@@ -363,3 +364,53 @@ test('DIFERENCIAL D: nenhuma das trilhas escreve ao ler', { skip }, async (t) =>
   assert.equal(await contarPg('audit_log'), antes.auditPg, 'leitura nunca gera audit_log');
   assert.equal(await contarPg('movimento_financeiro'), antes.movimentoPg);
 });
+
+test('DIFERENCIAL E: ids no limite do int4 respondem igual nos dois bancos', { skip }, async (t) => {
+  const { db, pool } = await montarCenario(t);
+
+  // O PostgreSQL guarda a chave em `int4`; o SQLite, em 64 bits. A validacao de
+  // entrada aceita qualquer inteiro seguro do JavaScript porque essa e regra de
+  // dominio, nao do banco. Sem tratamento na persistencia PostgreSQL, os dois
+  // ultimos ids abaixo divergiam: o SQLite respondia "nao existe" e o PostgreSQL
+  // vazava `22003 value out of range for type integer`.
+  const IDS = [ID_MAXIMO_INT4, ID_MAXIMO_INT4 + 1, Number.MAX_SAFE_INTEGER];
+
+  for (const id of IDS) {
+    const erroSqlite = capturar(() => sqlite.obterComprovanteDoMovimento(db, id));
+    await assert.rejects(
+      () => postgresql.obterComprovanteDoMovimento(pool, id),
+      (erro) => {
+        assert.equal(erro.name, erroSqlite.name, `name divergiu para o id ${id}`);
+        assert.equal(erro.codigo, erroSqlite.codigo, `codigo divergiu para o id ${id}`);
+        assert.equal(erro.codigo, 'movimento_inexistente');
+        return true;
+      },
+      `evidencia individual divergiu para o id ${id}`
+    );
+  }
+
+  // No lote, o contrato e nao lancar: cada id pedido recebe sua entrada.
+  const esperado = [...sqlite.obterComprovantesDeMovimentos(db, IDS).values()].map(
+    normalizarEvidencia
+  );
+  const obtido = [...(await postgresql.obterComprovantesDeMovimentos(pool, IDS)).values()].map(
+    normalizarEvidencia
+  );
+  assert.deepEqual(obtido, esperado, 'lote divergiu no limite do int4');
+
+  // E um id fora da faixa nao pode derrubar os validos que vao com ele: antes da
+  // correcao, o lote INTEIRO era recusado por causa de um vizinho.
+  const misturado = [idsSqliteValido(db), ID_MAXIMO_INT4 + 1];
+  const mapaSqlite = sqlite.obterComprovantesDeMovimentos(db, misturado);
+  const mapaPg = await postgresql.obterComprovantesDeMovimentos(pool, [
+    misturado[0],
+    ID_MAXIMO_INT4 + 1,
+  ]);
+  assert.equal(mapaPg.size, mapaSqlite.size);
+  assert.equal(mapaPg.size, 2);
+});
+
+/** Primeiro id real do cenario SQLite, para o caso misturado acima. */
+function idsSqliteValido(db) {
+  return db.prepare('SELECT MIN(id) AS id FROM movimento_financeiro').get().id;
+}

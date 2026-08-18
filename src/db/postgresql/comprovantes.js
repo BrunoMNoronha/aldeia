@@ -27,6 +27,8 @@
  * nao foi antecipada aqui. Nenhuma consulta usa lock explicito.
  */
 
+const { cabeNoInt4 } = require('./tipos');
+
 /** Colunas de `comprovante`. Nomes vindos do schema PostgreSQL (migration 001). */
 const COLUNAS_COMPROVANTE = `
          id, movimento_id, estado, observacao, referencia_externa, data,
@@ -84,6 +86,11 @@ function placeholders(quantidade, inicio = 1) {
  *   isso SIGNIFICA e decidido pelo caso de uso, nao aqui.
  */
 async function buscarComprovantePorMovimento(pool, movimentoId) {
+  // Id acima do teto do int4 nao pode ter linha: a coluna nao o representa.
+  // Mandar assim mesmo faria o servidor recusar com 22003, enquanto o SQLite
+  // apenas nao acharia nada — o contrato observavel tem de ser o mesmo.
+  if (!cabeNoInt4(movimentoId)) return undefined;
+
   const { rows } = await pool.query(SQL_COMPROVANTE_POR_MOVIMENTO, [movimentoId]);
   return rows[0];
 }
@@ -96,6 +103,10 @@ async function buscarComprovantePorMovimento(pool, movimentoId) {
  * @returns {Promise<object | undefined>}
  */
 async function buscarMovimentoPorId(pool, movimentoId) {
+  // Igual ao anterior: id que nao cabe na coluna e indistinguivel de id que nao
+  // existe. Quem chama transforma o `undefined` em `movimento_inexistente`.
+  if (!cabeNoInt4(movimentoId)) return undefined;
+
   const { rows } = await pool.query(SQL_MOVIMENTO_POR_ID, [movimentoId]);
   return rows[0];
 }
@@ -114,11 +125,18 @@ async function buscarMovimentoPorId(pool, movimentoId) {
 async function buscarComprovantesDeMovimentos(pool, movimentoIds) {
   if (movimentoIds.length === 0) return [];
 
+  // Ids fora da faixa do int4 sao descartados ANTES da consulta: um unico deles
+  // faria o PostgreSQL recusar o lote INTEIRO com 22003, e ids perfeitamente
+  // validos deixariam de ser lidos por causa do vizinho. Descartados aqui, eles
+  // simplesmente nao trazem linha — que e exatamente o que o SQLite faz.
+  const consultaveis = movimentoIds.filter(cabeNoInt4);
+  if (consultaveis.length === 0) return [];
+
   const { rows } = await pool.query(
     `SELECT ${COLUNAS_COMPROVANTE}
        FROM comprovante
-      WHERE movimento_id IN (${placeholders(movimentoIds.length)})`,
-    movimentoIds
+      WHERE movimento_id IN (${placeholders(consultaveis.length)})`,
+    consultaveis
   );
   return rows;
 }

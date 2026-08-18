@@ -26,13 +26,18 @@ const {
   SEM_REGISTRO,
 } = require('../src/services/comprovantes-postgresql');
 const { runMigrations } = require('../src/db/postgresql/migrator');
+const {
+  ID_MAXIMO_INT4,
+  cabeNoInt4,
+  parseDataCivilSegura,
+  DATA_CIVIL_RE,
+} = require('../src/db/postgresql/tipos');
 const { motivoSkip, schemaIsolado } = require('./helpers/postgres');
 
 const skip = motivoSkip();
 
 /** Mesmo formato do timestamp gravado pelo SQLite (`strftime`), sem fracao. */
 const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
-const DATA_CIVIL_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const OBSERVACAO = 'Comprovante solicitado ao associado.';
 
@@ -515,4 +520,179 @@ test('PG C19: a observacao nunca decide o estado', { skip }, async (t) => {
     fila.itens.map((item) => item.estado).sort(),
     ['ausente', 'pendente']
   );
+});
+
+// =============================================================================
+// Teto do int4 — equivalencia de ids que a coluna nao pode representar
+// =============================================================================
+//
+// `movimento_financeiro.id` e `int4` no PostgreSQL e de 64 bits no SQLite. A
+// validacao de entrada (`exigirId`) aceita qualquer inteiro seguro do
+// JavaScript, porque essa e regra de dominio e nao do banco. Sem tratamento na
+// persistencia, um id valido pela regra mas acima do teto do int4 fazia o
+// PostgreSQL recusar com `22003 value out of range for type integer`, enquanto o
+// SQLite apenas nao achava a linha — contratos diferentes para a mesma chamada.
+
+test('PG C20: id acima do teto do int4 responde como id inexistente', { skip }, async (t) => {
+  const { pool } = await schemaMigrado(t);
+  await criarMovimento(pool);
+
+  // O teto EXATO continua sendo um id consultavel: nao existe, logo o erro de
+  // dominio normal. Ele nao pode ser barrado junto com os que estouram.
+  await assert.rejects(
+    () => obterComprovanteDoMovimento(pool, ID_MAXIMO_INT4),
+    (erro) => erro instanceof ComprovanteError && erro.codigo === 'movimento_inexistente'
+  );
+
+  // Acima do teto: MESMA resposta, e nunca o erro cru do driver.
+  for (const id of [ID_MAXIMO_INT4 + 1, Number.MAX_SAFE_INTEGER]) {
+    await assert.rejects(
+      () => obterComprovanteDoMovimento(pool, id),
+      (erro) => {
+        assert.ok(erro instanceof ComprovanteError, `esperava ComprovanteError para ${id}`);
+        assert.equal(erro.codigo, 'movimento_inexistente');
+        // O codigo 22003 do PostgreSQL nao pode vazar como se fosse falha de
+        // infraestrutura: para quem chama, o id simplesmente nao existe.
+        assert.notEqual(erro.code, '22003');
+        return true;
+      },
+      `id ${id} deveria responder como inexistente`
+    );
+  }
+});
+
+test('PG C21: o lote tolera id fora da faixa do int4 sem perder os validos', { skip }, async (t) => {
+  const { pool } = await schemaMigrado(t);
+
+  const comRegistro = await criarMovimento(pool);
+  const semRegistro = await criarMovimento(pool);
+  await criarComprovante(pool, { movimentoId: comRegistro, estado: 'pendente' });
+
+  const foraDaFaixa = ID_MAXIMO_INT4 + 1;
+
+  // O ponto do teste: UM id fora da faixa fazia o PostgreSQL recusar o lote
+  // INTEIRO, e ids perfeitamente validos deixavam de ser lidos por causa do
+  // vizinho. Agora o invalido apenas nao traz linha.
+  const mapa = await obterComprovantesDeMovimentos(pool, [
+    comRegistro,
+    foraDaFaixa,
+    semRegistro,
+    Number.MAX_SAFE_INTEGER,
+  ]);
+
+  assert.equal(mapa.size, 4, 'todo id pedido continua no mapa');
+  assert.equal(mapa.get(comRegistro).estado, 'pendente', 'o id valido continua sendo lido');
+  assert.equal(mapa.get(semRegistro).estadoTecnico, SEM_REGISTRO);
+  assert.equal(mapa.get(foraDaFaixa).estadoTecnico, SEM_REGISTRO);
+  assert.equal(mapa.get(foraDaFaixa).estado, null);
+  assert.equal(mapa.get(Number.MAX_SAFE_INTEGER).estadoTecnico, SEM_REGISTRO);
+
+  // So ids fora da faixa: nada a consultar, nenhum erro.
+  const soInvalidos = await obterComprovantesDeMovimentos(pool, [
+    foraDaFaixa,
+    Number.MAX_SAFE_INTEGER,
+  ]);
+  assert.equal(soInvalidos.size, 2);
+  assert.equal(soInvalidos.get(foraDaFaixa).estadoTecnico, SEM_REGISTRO);
+});
+
+test('PG C22: cabeNoInt4 marca a fronteira exata', () => {
+  assert.equal(ID_MAXIMO_INT4, 2_147_483_647);
+
+  assert.equal(cabeNoInt4(1), true);
+  assert.equal(cabeNoInt4(ID_MAXIMO_INT4), true, 'o teto cabe');
+  assert.equal(cabeNoInt4(ID_MAXIMO_INT4 + 1), false, 'teto + 1 nao cabe');
+  assert.equal(cabeNoInt4(Number.MAX_SAFE_INTEGER), false);
+  assert.equal(cabeNoInt4(-ID_MAXIMO_INT4 - 1), true, 'o piso do int4 tambem cabe');
+  assert.equal(cabeNoInt4(-ID_MAXIMO_INT4 - 2), false);
+
+  // Nao-inteiros nunca cabem: a coluna e de inteiros.
+  for (const valor of [1.5, NaN, Infinity, -Infinity, '1', null, undefined, {}]) {
+    assert.equal(cabeNoInt4(valor), false, `esperava false para ${JSON.stringify(valor)}`);
+  }
+});
+
+// =============================================================================
+// Parser de DATE — data civil, sem fuso e sem valor sem sentido
+// =============================================================================
+
+test('PG C23: DATE atravessa como data civil, sem deslocamento de fuso', { skip }, async (t) => {
+  const { pool } = await schemaMigrado(t);
+
+  // 1 de janeiro e o caso critico: um deslocamento de fuso mudaria o dia, o mes
+  // E o ano — e portanto a competencia (M-10).
+  const datas = ['2026-01-01', '2026-12-31', '2026-06-15', '2000-02-29'];
+
+  for (const data of datas) {
+    const { rows } = await pool.query('SELECT $1::date AS d', [data]);
+    assert.equal(rows[0].d, data, `DATE ${data} nao pode mudar de dia`);
+    assert.equal(typeof rows[0].d, 'string', 'DATE nao pode chegar como Date');
+  }
+
+  // E pelo caminho publico, ate o contrato.
+  const movimentoId = await criarMovimento(pool, { data: '2026-01-01' });
+  await criarComprovante(pool, { movimentoId, estado: 'pendente' });
+
+  const [item] = (await listarPendenciasDeComprovante(pool)).itens;
+  assert.equal(item.movimento.data, '2026-01-01');
+  assert.match(item.movimento.data, DATA_CIVIL_RE);
+});
+
+test('PG C24: valores de DATE que nao sao data civil sao recusados ruidosamente', { skip }, async (t) => {
+  const { pool } = await schemaMigrado(t);
+
+  // Estes valores o PostgreSQL REALMENTE emite — verificados no servidor. Deixar
+  // qualquer um deles passar como se fosse 'YYYY-MM-DD' os faria circular pelo
+  // sistema ate alguem tentar compara-los ou formata-los.
+  const expressoes = [
+    "'infinity'::date",
+    "'-infinity'::date",
+    "'0044-03-15 BC'::date",
+    "'12026-01-10'::date",
+  ];
+
+  for (const expressao of expressoes) {
+    await assert.rejects(
+      () => pool.query(`SELECT ${expressao} AS d`),
+      (erro) => {
+        assert.ok(erro instanceof RangeError, `esperava RangeError para ${expressao}`);
+        assert.match(erro.message, /data civil/);
+        return true;
+      },
+      `${expressao} deveria ser recusado`
+    );
+  }
+});
+
+test('PG C25: parseDataCivilSegura, isoladamente', () => {
+  // NULL continua NULL: coluna opcional nao e erro.
+  assert.equal(parseDataCivilSegura(null), null);
+  assert.equal(parseDataCivilSegura(undefined), null);
+
+  assert.equal(parseDataCivilSegura('2026-01-10'), '2026-01-10');
+  assert.equal(parseDataCivilSegura('0001-01-01'), '0001-01-01');
+  assert.equal(parseDataCivilSegura('9999-12-31'), '9999-12-31');
+
+  const invalidos = [
+    'infinity',
+    '-infinity',
+    '0044-03-15 BC',
+    '12026-01-10',
+    '2026-13-01',
+    '2026-00-10',
+    '2026-01-32',
+    '2026-1-10',
+    '2026-01-10T00:00:00Z',
+    '',
+    42,
+    new Date('2026-01-10'),
+  ];
+
+  for (const invalido of invalidos) {
+    assert.throws(
+      () => parseDataCivilSegura(invalido),
+      RangeError,
+      `esperava RangeError para ${JSON.stringify(invalido)}`
+    );
+  }
 });

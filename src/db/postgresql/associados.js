@@ -22,6 +22,8 @@
  * Somente leitura: nao ha INSERT, UPDATE, DELETE nem transacao.
  */
 
+const { ID_MAXIMO_INT4, cabeNoInt4 } = require('./tipos');
+
 /**
  * Colunas lidas. E conhecimento de SCHEMA, portanto de persistencia: os nomes
  * vem de `migrations/postgresql/001_initial_schema.sql`.
@@ -78,16 +80,10 @@ function filtroNome(placeholder) {
   return `lower(nome COLLATE "C") LIKE lower(${placeholder}::text COLLATE "C") ESCAPE '\\'`;
 }
 
-/**
- * `associado.id` e `INTEGER` (int4) no schema PostgreSQL. Um id acima deste teto
- * nao pode existir na coluna, e envia-lo ao banco produziria erro de conversao
- * onde o SQLite simplesmente nao acharia a linha.
- *
- * O teto e conhecimento do TIPO DA COLUNA, por isso mora aqui e nao no contrato
- * compartilhado: no SQLite a mesma coluna e de 64 bits e um id acima de 2^31 e
- * legitimo.
- */
-const ID_MAXIMO_INT4 = 2_147_483_647;
+// `associado.id` e `INTEGER` (int4) no schema PostgreSQL. O teto e conhecimento
+// do TIPO DA COLUNA, compartilhado por toda a persistencia PostgreSQL: vive em
+// `./tipos` para que nenhuma tabela fique com uma copia propria do limite.
+// Reexportado porque ja havia consumidor importando daqui.
 
 const SQL_POR_ID = `SELECT ${COLUNAS_ASSOCIADO} FROM associado WHERE id = $1`;
 
@@ -149,7 +145,7 @@ async function buscarAssociados(pool, { nomePadraoLike = null, legacyId = null, 
  * @returns {Promise<object | undefined>}
  */
 async function buscarAssociadoPorId(pool, id) {
-  if (id > ID_MAXIMO_INT4) return undefined;
+  if (!cabeNoInt4(id)) return undefined;
 
   const { rows } = await pool.query(SQL_POR_ID, [id]);
   return rows[0];

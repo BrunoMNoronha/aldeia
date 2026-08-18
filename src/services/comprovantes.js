@@ -43,31 +43,32 @@
 //     inventado (C-07 segue TO CONFIRM).
 
 const { withTransaction } = require('../db/connection');
-const { ESTADO_COMPROVANTE } = require('../domain/constants');
-const { ATOR_PADRAO, PAGINACAO } = require('./ledger');
+const { ATOR_PADRAO } = require('./ledger');
 
-/**
- * Vocabulario dos quatro estados, vindo de `domain/constants` — que por sua vez
- * espelha o CHECK da migration 001. Nao ha segunda lista neste arquivo: uma
- * unica convencao ('presente' | 'ausente' | 'pendente' | 'nao_aplicavel'),
- * escrita como o resto do projeto escreve vocabulario estruturado.
- */
-const ESTADOS = ESTADO_COMPROVANTE;
-
-/**
- * Estado TECNICO de quem nao tem linha em `comprovante`. Nao e um estado de
- * dominio: nao existe no banco, nao pode ser enviado numa gravacao e nao entra
- * na fila de pendencia. Existe para que a ausencia de dado seja NOMEADA em vez
- * de virar 'ausente' por omissao.
- */
-const SEM_REGISTRO = 'sem_registro';
-
-/**
- * F-05 / F-10: os estados que significam "esta evidencia ainda precisa de
- * acompanhamento". 'presente' esta resolvido e 'nao_aplicavel' foi decidido —
- * nenhum dos dois e pendencia.
- */
-const ESTADOS_PENDENTES = Object.freeze(['pendente', 'ausente']);
+// O contrato independente de banco (vocabulario, validacao, forma da evidencia,
+// mapeamento publico) vive em `comprovantes-contrato.js` e e COMPARTILHADO com a
+// implementacao PostgreSQL (`comprovantes-postgresql.js`, ADR-003 / PG-2B1).
+// Aqui fica apenas o que e especifico do SQLite: o SQL e a chamada sincrona do
+// `better-sqlite3`.
+//
+// Este arquivo e TRANSITORIO: o SQLite continua sendo o runtime ate PG-6 e sai
+// em PG-7; nesse momento este modulo desaparece e o contrato permanece.
+const {
+  ESTADOS,
+  ESTADOS_PENDENTES,
+  SEM_REGISTRO,
+  ComprovanteError,
+  exigirId,
+  textoOpcional,
+  exigirEstado,
+  exigirEstadoPendente,
+  exigirPaginacao,
+  mapearComprovante,
+  evidenciaRegistrada,
+  evidenciaSemRegistro,
+  evidenciaDaLinha,
+  mapearItemDaFila,
+} = require('./comprovantes-contrato');
 
 /** Marca na auditoria que a decisao foi tomada por uma pessoa, nao derivada. */
 const ORIGEM_REGISTRO = 'manual';
@@ -182,178 +183,8 @@ function sqlListarPendencias(placeholders) {
 `;
 }
 
-/**
- * Erro de dominio do comprovante.
- *
- * Classe propria — comprovante nao e ledger —, mas com o MESMO contrato ja
- * usado pelo projeto: `codigo` estavel, traduzido para status HTTP na camada
- * web. Os codigos reaproveitam o vocabulario existente (`id_invalido`,
- * `campo_invalido`, `movimento_inexistente`, `paginacao_invalida`); so
- * `estado_comprovante_invalido` e novo, porque o conceito e novo.
- */
-class ComprovanteError extends Error {
-  constructor(message, codigo, options) {
-    super(message, options);
-    this.name = 'ComprovanteError';
-    this.codigo = codigo;
-  }
-}
-
-// --- validacao de entrada ---------------------------------------------------
-
-function descrever(valor) {
-  if (typeof valor === 'string') return `string ${JSON.stringify(valor)}`;
-  return `${typeof valor} ${String(valor)}`;
-}
-
-function exigirId(valor, campo) {
-  if (typeof valor !== 'number' || !Number.isSafeInteger(valor) || valor <= 0) {
-    throw new ComprovanteError(
-      `${campo} deve ser um id inteiro positivo (recebido: ${descrever(valor)})`,
-      'id_invalido'
-    );
-  }
-  return valor;
-}
-
-function textoOpcional(valor, campo) {
-  if (valor === null || valor === undefined) return null;
-  if (typeof valor !== 'string') {
-    throw new ComprovanteError(
-      `${campo} deve ser texto (recebido: ${descrever(valor)})`,
-      'campo_invalido'
-    );
-  }
-  const texto = valor.trim();
-  return texto === '' ? null : texto;
-}
-
 function exigirAtor(valor) {
   return textoOpcional(valor, 'ator') ?? ATOR_PADRAO;
-}
-
-/**
- * M-04: o estado e vocabulario ESTRUTURADO e fechado. `trim().toLowerCase()` e a
- * mesma normalizacao que o projeto ja aplica a `origem` e a `tipo` de ajuste:
- * uniformiza a CAIXA da palavra, jamais traduz significado. 'PRESENTE' e
- * 'presente' sao a mesma palavra — e por isso a nomenclatura em caixa alta do
- * enunciado da fase e aceita sem criar uma segunda convencao no banco.
- *
- * Continuam RECUSADOS, porque interpreta-los seria inventar regra: 'OK',
- * 'nao aplicavel' (com espaco), 'N/A', 'sim', 'nao', 'sem_registro' (estado
- * tecnico, nao de dominio), vazio, `null` e qualquer outro valor fora da lista.
- */
-function exigirEstado(valor) {
-  const estado = typeof valor === 'string' ? valor.trim().toLowerCase() : '';
-  if (!ESTADOS.includes(estado)) {
-    throw new ComprovanteError(
-      `estado deve ser um de: ${ESTADOS.join(', ')} (recebido: ${descrever(valor)})`,
-      'estado_comprovante_invalido'
-    );
-  }
-  return estado;
-}
-
-/** Mesma faixa e mesma recusa explicita da paginacao ja usada pelo ledger. */
-function exigirParametroDePagina(valor, campo, { padrao, minimo, maximo = null }) {
-  if (valor === null || valor === undefined) return padrao;
-
-  if (typeof valor !== 'number' || !Number.isSafeInteger(valor)) {
-    throw new ComprovanteError(
-      `${campo} deve ser um inteiro (recebido: ${descrever(valor)})`,
-      'paginacao_invalida'
-    );
-  }
-  if (valor < minimo || (maximo !== null && valor > maximo)) {
-    const faixa = maximo === null ? `>= ${minimo}` : `entre ${minimo} e ${maximo}`;
-    throw new ComprovanteError(
-      `${campo} deve estar ${faixa} (recebido: ${valor})`,
-      'paginacao_invalida'
-    );
-  }
-  return valor;
-}
-
-/**
- * Filtro OPCIONAL da fila. Ausente = os dois estados pendentes. Presente,
- * precisa ser um estado que a fila realmente serve: pedir 'presente' aqui seria
- * pedir uma pendencia que nao existe, e isso e recusado em vez de devolver
- * lista vazia (que seria lida como "nao ha nada pendente").
- */
-function exigirEstadoPendente(valor) {
-  if (valor === null || valor === undefined) return [...ESTADOS_PENDENTES];
-
-  const estado = exigirEstado(valor);
-  if (!ESTADOS_PENDENTES.includes(estado)) {
-    throw new ComprovanteError(
-      `a fila de pendencia de comprovante serve apenas: ${ESTADOS_PENDENTES.join(', ')} ` +
-        `(recebido: ${descrever(valor)})`,
-      'estado_comprovante_invalido'
-    );
-  }
-  return [estado];
-}
-
-// --- mapeamento linha -> objeto de dominio ----------------------------------
-
-function mapearComprovante(row) {
-  if (row === undefined || row === null) return null;
-  return {
-    id: row.id,
-    movimentoId: row.movimento_id,
-    estado: row.estado,
-    observacao: row.observacao,
-    // Reservadas para o futuro (C-06). Vao no retorno para que o consumidor
-    // veja que existem e estao vazias, em vez de supor que foram preenchidas.
-    referenciaExterna: row.referencia_externa,
-    data: row.data,
-    criadoEm: row.criado_em,
-    atualizadoEm: row.atualizado_em,
-  };
-}
-
-/**
- * Evidencia de UM movimento, na forma em que servico, API e tela a consomem.
- *
- * `estado` e `estadoTecnico` sao campos diferentes de proposito:
- *   estado        -> o estado de DOMINIO, ou `null` quando nao ha registro;
- *   estadoTecnico -> sempre preenchido, valendo `sem_registro` quando nao ha
- *                    linha. Assim nenhum consumidor precisa escolher entre
- *                    "null" e "ausente" — a diferenca esta escrita.
- */
-function evidenciaRegistrada(movimentoId, registro) {
-  return {
-    movimentoId,
-    registrado: true,
-    estado: registro.estado,
-    estadoTecnico: registro.estado,
-    pendenteDeEvidencia: ESTADOS_PENDENTES.includes(registro.estado),
-    observacao: registro.observacao,
-    registro,
-  };
-}
-
-/**
- * M-04 / regra da Fase 4A: sem linha em `comprovante` o movimento nao esta
- * 'ausente' — nao ha declaracao alguma sobre ele. `pendenteDeEvidencia` e
- * `false` porque pendencia e algo DECLARADO, nunca deduzido de um vazio.
- */
-function evidenciaSemRegistro(movimentoId) {
-  return {
-    movimentoId,
-    registrado: false,
-    estado: null,
-    estadoTecnico: SEM_REGISTRO,
-    pendenteDeEvidencia: false,
-    observacao: null,
-    registro: null,
-  };
-}
-
-function evidenciaDaLinha(movimentoId, row) {
-  return row === undefined || row === null
-    ? evidenciaSemRegistro(movimentoId)
-    : evidenciaRegistrada(movimentoId, mapearComprovante(row));
 }
 
 // --- auditoria (F-11) -------------------------------------------------------
@@ -466,40 +297,14 @@ function obterComprovantesDeMovimentos(db, movimentoIds) {
  */
 function listarPendenciasDeComprovante(db, opcoes = {}) {
   const estados = exigirEstadoPendente(opcoes.estado);
-  const limite = exigirParametroDePagina(opcoes.limite, 'limite', {
-    padrao: PAGINACAO.limitePadrao,
-    minimo: PAGINACAO.limiteMinimo,
-    maximo: PAGINACAO.limiteMaximo,
-  });
-  const offset = exigirParametroDePagina(opcoes.offset, 'offset', {
-    padrao: PAGINACAO.offsetPadrao,
-    minimo: PAGINACAO.offsetMinimo,
-  });
+  const { limite, offset } = exigirPaginacao(opcoes);
 
   const placeholders = estados.map(() => '?').join(', ');
   const { total } = db.prepare(sqlContarPendencias(placeholders)).get(...estados);
   const itens = db
     .prepare(sqlListarPendencias(placeholders))
     .all(...estados, limite, offset)
-    .map((row) => ({
-      comprovanteId: row.comprovante_id,
-      movimentoId: row.movimento_id,
-      estado: row.estado,
-      observacao: row.observacao,
-      criadoEm: row.criado_em,
-      atualizadoEm: row.atualizado_em,
-      // O movimento vai junto para que a fila seja operavel sem uma segunda
-      // consulta. Valor continua em CENTAVOS INTEIROS (T-06) e nada aqui soma,
-      // compara ou classifica situacao financeira.
-      movimento: {
-        id: row.movimento_id,
-        data: row.movimento_data,
-        valorCentavos: row.movimento_valor_centavos,
-        associadoId: row.movimento_associado_id,
-        estadoIdentificacao: row.movimento_estado_identificacao,
-        ativo: row.movimento_ativo === 1,
-      },
-    }));
+    .map(mapearItemDaFila);
 
   return { itens, paginacao: { limite, offset, total }, estados };
 }

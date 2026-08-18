@@ -93,7 +93,7 @@ function limiteValido(valor) {
 // --- mapeamento linha -> objeto de dominio -----------------------------------
 
 /**
- * Instante de auditoria como texto ISO-8601.
+ * Instante de auditoria como texto UTC, com precisao de SEGUNDO.
  *
  * As duas trilhas guardam o mesmo FATO em tipos diferentes: o SQLite guarda
  * TEXT ISO-8601 e o PostgreSQL guarda TIMESTAMPTZ, que o driver `pg` entrega
@@ -101,15 +101,20 @@ function limiteValido(valor) {
  * `typeof associado.criadoEm === 'string'`), entao a normalizacao acontece aqui,
  * uma vez, em vez de vazar um tipo diferente para a UI depois do cutover.
  *
+ * `toISOString()` sozinho NAO resolve: ele produz `.000Z` (milissegundos), e o
+ * contrato observavel hoje — verificado nos testes do SQLite e espelhado em
+ * PG-2B1 (`comprovantes-contrato.js`) — e `YYYY-MM-DDTHH:MM:SSZ`, sem fracao.
+ * Truncamos a fracao para que as duas trilhas devolvam a MESMA string.
+ *
  * Isto e conversao de TRANSPORTE, nao regra de dominio: nenhum valor e
- * reinterpretado, apenas serializado.
+ * reinterpretado, apenas serializado. A precisao completa continua no banco.
  *
  * @param {unknown} valor
  * @returns {string | null}
  */
 function normalizarInstante(valor) {
   if (valor === undefined || valor === null) return null;
-  if (valor instanceof Date) return valor.toISOString();
+  if (valor instanceof Date) return `${valor.toISOString().slice(0, 19)}Z`;
   return valor;
 }
 

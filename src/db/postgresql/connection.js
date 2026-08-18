@@ -17,6 +17,7 @@
 const pg = require('pg');
 
 const { resolveDatabaseUrl } = require('../../config');
+const { PG_TYPE_DATE, parseDataCivilSegura, ID_MAXIMO_INT4 } = require('./tipos');
 
 // ---------------------------------------------------------------------------
 // T-06 — dinheiro nunca depende de ponto flutuante binario
@@ -51,6 +52,22 @@ function parseInt8Seguro(value) {
 }
 
 pg.types.setTypeParser(PG_TYPE_INT8, parseInt8Seguro);
+
+// ---------------------------------------------------------------------------
+// DATA CIVIL — `DATE` nunca vira instante (M-10)
+// ---------------------------------------------------------------------------
+//
+// O parser vive em `./tipos` junto com o teto do `int4`: sao os dois fatos de
+// TIPO que a trilha PostgreSQL inteira precisa respeitar. Aqui ele apenas e
+// INSTALADO, e a instalacao acontece no carregamento deste modulo — antes de
+// qualquer pool existir, portanto antes de qualquer linha ser lida.
+//
+// Resumo do porque (detalhe completo em `./tipos`): o parser padrao do
+// `node-postgres` converte `DATE` em `Date` na meia-noite LOCAL, o que devolve o
+// DIA ANTERIOR a leste de Greenwich e pode mover um pagamento de competencia.
+// O parser seguro devolve o texto 'YYYY-MM-DD' e RECUSA ruidosamente os valores
+// de DATE que nao sao data civil ('infinity', ' BC', ano de cinco digitos).
+pg.types.setTypeParser(PG_TYPE_DATE, parseDataCivilSegura);
 
 /** Configuracao padrao do pool. Nenhum valor exige servico externo (T-03). */
 const POOL_DEFAULTS = Object.freeze({
@@ -197,4 +214,8 @@ module.exports = {
   withTransaction,
   parseInt8Seguro,
   POOL_DEFAULTS,
+  PG_TYPE_INT8,
+  PG_TYPE_DATE,
+  parseDataCivilSegura,
+  ID_MAXIMO_INT4,
 };

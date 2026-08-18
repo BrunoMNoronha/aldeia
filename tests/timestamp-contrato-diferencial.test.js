@@ -1,82 +1,117 @@
 'use strict';
 
-// Teste DIFERENCIAL de contrato — precisao publica de timestamp (PG-2A x PG-2B1 x SQLite).
+// Teste DIFERENCIAL de contrato — precisao publica de timestamp (SQLite x PG-2A x PG-2B1).
 //
-// PG-2A (`associados-contrato.js`) e PG-2B1 (`comprovantes-contrato.js`) recebem,
-// cada um, o mesmo `Date` que o driver `pg` entrega para uma coluna TIMESTAMPTZ,
-// e cada um tem sua propria funcao `normalizarInstante`/`mapear*`. O SQLite nunca
-// produz um `Date` aqui — ele ja guarda TEXT no formato `YYYY-MM-DDTHH:MM:SSZ`
-// (`strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`), entao seu lado da comparacao e o
-// proprio literal esperado, sem conversao.
+// `mapearAssociado` (`associados-contrato.js`) e `mapearComprovante`
+// (`comprovantes-contrato.js`) NAO sao funcoes exclusivas do PostgreSQL: sao o
+// MESMO caminho que `src/services/associados.js` e `src/services/comprovantes.js`
+// (trilha SQLite, runtime atual) chamam sobre a linha que leem do
+// `better-sqlite3`. Nao existe um "mapeador SQLite" separado — o contrato e
+// compartilhado por desenho (ver AGENTS.md, T-08).
 //
-// O instante e controlado (nao `now()`) para que a comparacao seja por VALOR
-// exato, e nao apenas por tipo ou regex — ver AGENTS.md, secao "Correcao de
-// entidade financeira" e M-07/M-10 quanto a nao alterar semantica de dado.
+// A unica coisa que difere entre as trilhas e o TIPO que `row.criado_em` chega:
+//   SQLite     -> string, ja no formato TEXT gravado pelo schema
+//                 (`strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`);
+//   PostgreSQL -> `Date`, que e o que o driver `pg` entrega para TIMESTAMPTZ.
+//
+// Este teste exercita os DOIS caminhos reais — mesma funcao de mapeamento,
+// entrada string de um lado e `Date` do outro — e compara o resultado publico
+// por VALOR exato, nao por tipo ou regex.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { normalizarInstante: normalizarInstantePg2a, mapearAssociado } = require('../src/services/associados-contrato');
-const { normalizarInstante: normalizarInstantePg2b1, mapearComprovante } = require('../src/services/comprovantes-contrato');
+const { mapearAssociado } = require('../src/services/associados-contrato');
+const { mapearComprovante } = require('../src/services/comprovantes-contrato');
 
-// Instante controlado, ver AGENTS.md / pacote da tarefa PG-2B1 (fechamento corretivo).
-const INSTANTE = new Date('2026-01-10T12:34:56.000Z');
-const ESPERADO_SQLITE = '2026-01-10T12:34:56Z';
+// Mesmo instante, duas representacoes de origem — a diferenca real entre as trilhas.
+const INSTANTE_SQLITE = '2026-01-10T12:34:56Z'; // como o SQLite ja guarda em TEXT.
+const INSTANTE_POSTGRESQL = new Date('2026-01-10T12:34:56.000Z'); // como o driver `pg` entrega.
+const ESPERADO = '2026-01-10T12:34:56Z';
 
-test('DIFERENCIAL: precisao publica de timestamp coincide entre SQLite, PG-2A e PG-2B1', () => {
-  const pg2a = normalizarInstantePg2a(INSTANTE);
-  const pg2b1 = normalizarInstantePg2b1(INSTANTE);
-
-  // Caso A — valor exato, nas tres trilhas.
-  assert.equal(pg2a, ESPERADO_SQLITE);
-  assert.equal(pg2b1, ESPERADO_SQLITE);
-
-  // Caso E — diferencial real: PG-2A e PG-2B1 tem de concordar entre si, e com
-  // o literal que o SQLite ja guarda (nao um regex, o mesmo valor).
-  assert.equal(pg2a, pg2b1);
-  assert.equal(pg2a, ESPERADO_SQLITE);
-
-  // Caso B — tipo.
-  assert.equal(typeof pg2a, 'string');
-  assert.equal(typeof pg2b1, 'string');
-
-  // Caso C — sem fracao de milissegundo no contrato publico.
-  assert.ok(!pg2a.includes('.000Z'), `PG-2A vazou fracao: ${pg2a}`);
-  assert.ok(!pg2b1.includes('.000Z'), `PG-2B1 vazou fracao: ${pg2b1}`);
-});
-
-test('DIFERENCIAL: criadoEm/atualizadoEm mapeados coincidem entre PG-2A e PG-2B1', () => {
-  // Caso D — os dois campos de auditoria, nos dois mapeadores, com o MESMO Date.
-  const associado = mapearAssociado({
+function linhaAssociado(criadoEm) {
+  return {
     id: 1,
     legacy_id: '1',
     nome: 'Fulano',
     status_cadastral: 'ativo',
     legacy_status_code: null,
     observacoes: null,
-    criado_em: INSTANTE,
-    atualizado_em: INSTANTE,
-  });
+    criado_em: criadoEm,
+    atualizado_em: criadoEm,
+  };
+}
 
-  const comprovante = mapearComprovante({
+function linhaComprovante(criadoEm) {
+  return {
     id: 1,
     movimento_id: 1,
-    estado: 'confirmado',
+    estado: 'presente',
     observacao: null,
     referencia_externa: null,
     data: '2026-01-10',
-    criado_em: INSTANTE,
-    atualizado_em: INSTANTE,
-  });
+    criado_em: criadoEm,
+    atualizado_em: criadoEm,
+  };
+}
 
-  assert.equal(associado.criadoEm, ESPERADO_SQLITE);
-  assert.equal(associado.atualizadoEm, ESPERADO_SQLITE);
-  assert.equal(comprovante.criadoEm, ESPERADO_SQLITE);
-  assert.equal(comprovante.atualizadoEm, ESPERADO_SQLITE);
+test('DIFERENCIAL: mapearAssociado devolve o mesmo timestamp publico para linha SQLite e linha PostgreSQL', () => {
+  // A — SQLite real: a MESMA funcao de mapeamento do runtime SQLite, com a
+  // entrada string que `better-sqlite3` de fato entrega.
+  const resultadoSqlite = mapearAssociado(linhaAssociado(INSTANTE_SQLITE));
+  // B — PostgreSQL real: a MESMA funcao, com a entrada `Date` que `pg` entrega.
+  const resultadoPostgresql = mapearAssociado(linhaAssociado(INSTANTE_POSTGRESQL));
+
+  // C — igualdade exata, por valor, nao por tipo/regex.
+  assert.equal(resultadoSqlite.criadoEm, ESPERADO);
+  assert.equal(resultadoPostgresql.criadoEm, ESPERADO);
+  assert.equal(resultadoSqlite.criadoEm, resultadoPostgresql.criadoEm);
+
+  // F — atualizadoEm tambem.
+  assert.equal(resultadoSqlite.atualizadoEm, ESPERADO);
+  assert.equal(resultadoPostgresql.atualizadoEm, ESPERADO);
+  assert.equal(resultadoSqlite.atualizadoEm, resultadoPostgresql.atualizadoEm);
+
+  // D — tipo, nas duas trilhas.
+  assert.equal(typeof resultadoSqlite.criadoEm, 'string');
+  assert.equal(typeof resultadoPostgresql.criadoEm, 'string');
+
+  // E — sem fracao de milissegundo no contrato publico.
+  assert.ok(!resultadoSqlite.criadoEm.includes('.000Z'));
+  assert.ok(!resultadoPostgresql.criadoEm.includes('.000Z'));
+});
+
+test('DIFERENCIAL: mapearComprovante devolve o mesmo timestamp publico para linha SQLite e linha PostgreSQL', () => {
+  // A/B — mesma funcao real de PG-2B1, entrada string (SQLite) e Date (PostgreSQL).
+  const resultadoSqlite = mapearComprovante(linhaComprovante(INSTANTE_SQLITE));
+  const resultadoPostgresql = mapearComprovante(linhaComprovante(INSTANTE_POSTGRESQL));
+
+  // C — igualdade exata.
+  assert.equal(resultadoSqlite.criadoEm, ESPERADO);
+  assert.equal(resultadoPostgresql.criadoEm, ESPERADO);
+  assert.equal(resultadoSqlite.criadoEm, resultadoPostgresql.criadoEm);
+
+  // F — atualizadoEm tambem.
+  assert.equal(resultadoSqlite.atualizadoEm, ESPERADO);
+  assert.equal(resultadoPostgresql.atualizadoEm, ESPERADO);
+  assert.equal(resultadoSqlite.atualizadoEm, resultadoPostgresql.atualizadoEm);
+
+  // D — tipo.
+  assert.equal(typeof resultadoSqlite.criadoEm, 'string');
+  assert.equal(typeof resultadoPostgresql.criadoEm, 'string');
+
+  // E — sem fracao de milissegundo.
+  assert.ok(!resultadoSqlite.criadoEm.includes('.000Z'));
+  assert.ok(!resultadoPostgresql.criadoEm.includes('.000Z'));
+});
+
+test('DIFERENCIAL: PG-2A e PG-2B1 concordam entre si sobre o mesmo instante (G)', () => {
+  // G — os dois mapeadores PostgreSQL continuam obedecendo ao mesmo contrato
+  // um do outro, com o mesmo `Date` de entrada.
+  const associado = mapearAssociado(linhaAssociado(INSTANTE_POSTGRESQL));
+  const comprovante = mapearComprovante(linhaComprovante(INSTANTE_POSTGRESQL));
 
   assert.equal(associado.criadoEm, comprovante.criadoEm);
   assert.equal(associado.atualizadoEm, comprovante.atualizadoEm);
-
-  assert.ok(!associado.criadoEm.includes('.000Z'));
-  assert.ok(!comprovante.criadoEm.includes('.000Z'));
+  assert.equal(associado.criadoEm, ESPERADO);
 });

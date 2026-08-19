@@ -25,6 +25,14 @@
 //      dominio 'ausente'. Somente o segundo entra na fila de pendencia.
 
 const { ESTADO_COMPROVANTE, ATOR_PADRAO } = require('../domain/constants');
+// Normalizacao de transporte (instante, data civil, booleano) e comum a todas as
+// trilhas e vive em `tipos-publicos`; reexportada aqui para nao quebrar quem ja
+// a consome por este contrato.
+const {
+  normalizarInstante,
+  normalizarDataCivil,
+  normalizarBooleano,
+} = require('./tipos-publicos');
 const { PAGINACAO } = require('./paginacao');
 
 /**
@@ -199,60 +207,6 @@ function exigirPaginacao({ limite, offset }) {
 }
 
 // --- normalizacao de transporte ----------------------------------------------
-
-/**
- * Instante de auditoria como texto UTC, com precisao de SEGUNDO.
- *
- * As duas trilhas guardam o mesmo FATO em tipos diferentes: o SQLite guarda TEXT
- * gerado por `strftime('%Y-%m-%dT%H:%M:%SZ','now')` e o PostgreSQL guarda
- * TIMESTAMPTZ, que o driver `pg` entrega como `Date`.
- *
- * `toISOString()` sozinho NAO resolve: ele produz `.000Z` (milissegundos), e o
- * contrato observavel hoje — verificado nos testes do SQLite — e
- * `YYYY-MM-DDTHH:MM:SSZ`, sem fracao. Deixar a diferenca passar faria o cutover
- * mudar o formato de todo timestamp publico sem ninguem pedir. Truncamos a
- * fracao para que as duas trilhas devolvam a MESMA string.
- *
- * Isto e conversao de TRANSPORTE, nao regra de dominio: o instante nao muda,
- * apenas a serializacao. A precisao completa continua no banco.
- *
- * @param {unknown} valor
- * @returns {string | null}
- */
-function normalizarInstante(valor) {
-  if (valor === undefined || valor === null) return null;
-  if (valor instanceof Date) return `${valor.toISOString().slice(0, 19)}Z`;
-  return valor;
-}
-
-/**
- * Data CIVIL (`comprovante.data`, `movimento_financeiro.data`).
- *
- * Nao ha conversao de fuso aqui, e isso e o ponto: o PostgreSQL entrega `DATE`
- * como texto 'YYYY-MM-DD' (parser instalado em `src/db/postgresql/connection.js`)
- * e o SQLite ja guarda o mesmo texto. Promover uma data civil a instante pode
- * move-la de dia, de mes e portanto de competencia (M-10).
- *
- * @param {unknown} valor
- * @returns {string | null}
- */
-function normalizarDataCivil(valor) {
-  if (valor === undefined || valor === null) return null;
-  return valor;
-}
-
-/**
- * `ativo` como booleano no contrato publico.
- *
- * O SQLite guarda 0/1 (nao tem booleano) e o PostgreSQL guarda BOOLEAN. Sem esta
- * normalizacao uma trilha devolveria `1` e a outra `true` no MESMO campo.
- *
- * @param {unknown} valor
- * @returns {boolean}
- */
-function normalizarBooleano(valor) {
-  return valor === true || valor === 1;
-}
 
 // --- mapeamento linha -> objeto de dominio ----------------------------------
 

@@ -1,6 +1,9 @@
 # ADR-003 — Adotar PostgreSQL como persistência principal
 
-- **Status:** **aceito**. Fases concluídas: **PG-0** (governança) + **PG-1** (fundação paralela).
+- **Status:** **aceito**. Fases concluídas: **PG-0** (governança) + **PG-1** (fundação
+  paralela). **PG-2 em andamento**, com as subfases **PG-2A** (associados/leitura),
+  **PG-2B1** (comprovantes/leitura), **PG-2B2** (comprovantes/escrita) e **PG-2C1**
+  (ledger/leitura) consolidadas.
 - **Data:** 2026-08-17
 - **Baseline normativo aplicável:** `KB-BASELINE-ACASA-v2.0.pdf` (FROZEN) — **autoridade
   normativa canônica**. Este ADR é o registro da decisão arquitetural, **não** o baseline.
@@ -8,11 +11,12 @@
 - **Relação com ADR-001 e ADR-002:** substitui parcialmente (ver abaixo)
 - **Superseded by:** —
 
-> **Estado da migração.** A decisão está aceita e a fundação existe, mas
-> **PostgreSQL ainda não é o banco do runtime**. A camada `src/db/postgresql/` é
-> paralela e nenhum service, rota ou script a consome; todo acesso a dados
-> continua passando por SQLite até **PG-6**. Ver a tabela de fases em
-> "Estratégia de cutover".
+> **Estado da migração.** A decisão está aceita, a fundação existe e a PG-2 está
+> **em andamento**, mas **PostgreSQL ainda não é o banco do runtime**. A camada
+> `src/db/postgresql/` e os services `*-postgresql.js` são paralelos: **nenhuma
+> rota, página, view ou script os consome** — apenas os testes. Todo acesso a
+> dados do runtime continua passando por SQLite até **PG-6**. Ver a tabela de
+> fases em "Estratégia de cutover".
 
 ## Relação com os ADRs anteriores
 
@@ -145,7 +149,7 @@ impossível atribuir uma eventual regressão financeira a uma causa.
 |---|---|---|
 | **PG-0** | Governança: este ADR e a proposta de alteração normativa. | **feito** |
 | **PG-1** | Fundação PostgreSQL paralela: `pg`, conexão/pool, `withTransaction`, health, migrator, migrations e testes. Runtime **inalterado**. | **feito** |
-| **PG-2** | Conversão dos acessos a dados: services, importador, scripts e rotas passam a `async` e a SQL PostgreSQL. | pendente |
+| **PG-2** | Conversão dos acessos a dados: services, importador, scripts e rotas passam a `async` e a SQL PostgreSQL. | **em andamento** (ver subfases abaixo) |
 | **PG-3** | Suíte equivalente: todos os testes financeiros existentes rodando contra PostgreSQL. | pendente |
 | **PG-4** | Migração dos dados SQLite → PostgreSQL, com preservação de ids e proveniência. | pendente |
 | **PG-5** | Validação: conferência de totais, proveniência e contagens entre os dois bancos. | pendente |
@@ -153,6 +157,25 @@ impossível atribuir uma eventual regressão financeira a uma causa.
 | **PG-7** | Retirada do SQLite: remoção de `better-sqlite3`, de `src/db/connection.js` e do que ficou órfão. | pendente |
 
 Nenhuma fase pode ser considerada concluída com a suíte vermelha.
+
+### Subfases da PG-2
+
+A PG-2 é executada por entidade e por natureza da operação, para que cada
+revisão seja pequena e reversível. Cada subfase entrega uma trilha PostgreSQL
+**paralela e provada por teste** — nenhuma delas muda o runtime.
+
+| Subfase | Escopo | Estado |
+|---|---|---|
+| **PG-2A** | Associados: leitura. | **feito** |
+| **PG-2B1** | Comprovantes: leitura. | **feito** |
+| **PG-2B2** | Comprovantes: escrita (transacional, com auditoria e serialização por linha). | **feito** |
+| **PG-2C1** | Ledger: leitura (`obterMovimento`, fila de não identificados, extrato do associado, alocações e resumo). | **feito** |
+| **PG-2C2** | Ledger: escrita (registrar, alocar, identificar, inativar, ajustes). | pendente |
+| **PG-2D** | Importador e scripts. | pendente |
+| **PG-2E** | Rotas e camada web passam a `async`. | pendente |
+
+Enquanto a PG-2 não terminar, **PG-2 inteira permanece "em andamento"**: uma
+subfase concluída não antecipa o cutover nem autoriza consumo em produção.
 
 ## Rollback
 

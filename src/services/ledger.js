@@ -34,6 +34,24 @@
 
 const { withTransaction } = require('../db/connection');
 const { TIPO_AJUSTE, ATOR_PADRAO } = require('../domain/constants');
+// Contrato compartilhado com a trilha PostgreSQL (ADR-003 / PG-2C1): erro de
+// dominio, validacao de id/paginacao, mappers publicos e rotulo de competencia.
+// A ESCRITA (validacao de centavos, data, origem, motivo, ator e a auditoria)
+// continua aqui — este modulo ainda e o runtime, e move-la agora seria refatorar
+// o ledger inteiro no meio da migracao de banco.
+const {
+  LedgerError,
+  descrever,
+  exigirId,
+  exigirParametroDePagina,
+  normalizarBooleano,
+  mapearMovimento,
+  mapearAlocacao,
+  mapearMovimentoComInativacao,
+  mapearAlocacaoComInativacao,
+  rotuloCompetencia,
+  montarResumo,
+} = require('./ledger-contrato');
 
 /**
  * Vocabulario de origem aceito no lancamento MANUAL desta fase.
@@ -343,20 +361,7 @@ const SQL_INSERT_AUDIT = `
   VALUES (?, ?, ?, ?, ?, ?, ?)
 `;
 
-class LedgerError extends Error {
-  constructor(message, codigo, options) {
-    super(message, options);
-    this.name = 'LedgerError';
-    this.codigo = codigo;
-  }
-}
-
 // --- validacao de entrada ---------------------------------------------------
-
-function descrever(valor) {
-  if (typeof valor === 'string') return `string ${JSON.stringify(valor)}`;
-  return `${typeof valor} ${String(valor)}`;
-}
 
 /**
  * T-06: a API so aceita centavos INTEIROS positivos.
@@ -372,16 +377,6 @@ function exigirCentavos(valor, campo) {
   }
   if (valor <= 0) {
     throw new LedgerError(`${campo} deve ser maior que zero (recebido: ${valor})`, 'valor_nao_positivo');
-  }
-  return valor;
-}
-
-function exigirId(valor, campo) {
-  if (typeof valor !== 'number' || !Number.isSafeInteger(valor) || valor <= 0) {
-    throw new LedgerError(
-      `${campo} deve ser um id inteiro positivo (recebido: ${descrever(valor)})`,
-      'id_invalido'
-    );
   }
   return valor;
 }
@@ -463,30 +458,6 @@ function exigirAtor(valor) {
 }
 
 /**
- * Parametro de paginacao: ausente vira o padrao; presente precisa ser inteiro
- * dentro da faixa. Nao ha coercao silenciosa — '50', 50.5 e 1e9 sao RECUSADOS
- * em vez de virarem 50, 50 ou o teto, na mesma linha do tratamento de dinheiro.
- */
-function exigirParametroDePagina(valor, campo, { padrao, minimo, maximo = null }) {
-  if (valor === null || valor === undefined) return padrao;
-
-  if (typeof valor !== 'number' || !Number.isSafeInteger(valor)) {
-    throw new LedgerError(
-      `${campo} deve ser um inteiro (recebido: ${descrever(valor)})`,
-      'paginacao_invalida'
-    );
-  }
-  if (valor < minimo || (maximo !== null && valor > maximo)) {
-    const faixa = maximo === null ? `>= ${minimo}` : `entre ${minimo} e ${maximo}`;
-    throw new LedgerError(
-      `${campo} deve estar ${faixa} (recebido: ${valor})`,
-      'paginacao_invalida'
-    );
-  }
-  return valor;
-}
-
-/**
  * M-08 / F-11: identificar um deposito — ou inativar um lancamento — e uma
  * decisao humana e precisa dizer por que. Texto vazio ou so espaco nao explica
  * nada e e recusado. A unica normalizacao aplicada e o `trim` ja convencionado
@@ -507,64 +478,6 @@ function exigirMotivo(valor, decisao = 'a identificacao') {
 }
 
 // --- mapeamento linha -> objeto de dominio ----------------------------------
-
-function mapearMovimento(row) {
-  if (row === undefined || row === null) return null;
-  return {
-    id: row.id,
-    data: row.data,
-    valorCentavos: row.valor_centavos,
-    tipo: row.tipo,
-    origem: row.origem,
-    associadoId: row.associado_id,
-    observacao: row.observacao,
-    estadoIdentificacao: row.estado_identificacao,
-    ativo: row.ativo === 1,
-    criadoEm: row.criado_em,
-    atualizadoEm: row.atualizado_em,
-  };
-}
-
-function mapearAlocacao(row) {
-  if (row === undefined || row === null) return null;
-  return {
-    id: row.id,
-    movimentoId: row.movimento_id,
-    competenciaId: row.competencia_id,
-    valorCentavos: row.valor_centavos,
-    observacao: row.observacao,
-    ativo: row.ativo === 1,
-    criadoEm: row.criado_em,
-    atualizadoEm: row.atualizado_em,
-  };
-}
-
-/**
- * Movimento COM a trilha de inativacao (M-09).
- *
- * Os campos vivem num mapper separado de proposito: o contrato ja consumido
- * pelas rotas JSON de criacao/alocacao continua exatamente como estava, e quem
- * precisa provar a inativacao — auditoria e extrato individual — pede esta
- * versao explicitamente.
- */
-function mapearMovimentoComInativacao(row) {
-  if (row === undefined || row === null) return null;
-  return {
-    ...mapearMovimento(row),
-    inativadoEm: row.inativado_em,
-    motivoInativacao: row.motivo_inativacao,
-  };
-}
-
-/** Alocacao COM a trilha de inativacao — mesma razao do mapper acima. */
-function mapearAlocacaoComInativacao(row) {
-  if (row === undefined || row === null) return null;
-  return {
-    ...mapearAlocacao(row),
-    inativadoEm: row.inativado_em,
-    motivoInativacao: row.motivo_inativacao,
-  };
-}
 
 /**
  * Ajuste de credito/debito — mapper UNICO da entidade (M-03).
@@ -589,16 +502,12 @@ function mapearAjuste(row) {
     data: row.data,
     competenciaId: row.competencia_id,
     observacao: row.observacao,
-    ativo: row.ativo === 1,
+    ativo: normalizarBooleano(row.ativo),
     inativadoEm: row.inativado_em,
     motivoInativacao: row.motivo_inativacao,
     criadoEm: row.criado_em,
     atualizadoEm: row.atualizado_em,
   };
-}
-
-function rotuloCompetencia(competencia) {
-  return `${competencia.ano}-${String(competencia.mes).padStart(2, '0')}`;
 }
 
 // --- auditoria (F-11) -------------------------------------------------------
@@ -635,14 +544,12 @@ function exigirMovimento(db, movimentoId) {
 /** Resumo calculado EXCLUSIVAMENTE a partir do ledger (F-08). */
 function resumoDeMovimento(db, movimentoRow) {
   const { quantidade, soma } = db.prepare(SQL_RESUMO_ALOCACOES).get(movimentoRow.id);
-  return {
+  return montarResumo({
     movimentoId: movimentoRow.id,
     totalCentavos: movimentoRow.valor_centavos,
-    alocadoCentavos: soma,
-    naoAlocadoCentavos: movimentoRow.valor_centavos - soma,
-    quantidadeAlocacoes: quantidade,
-    integralmenteAlocado: soma === movimentoRow.valor_centavos,
-  };
+    quantidade,
+    soma,
+  });
 }
 
 /**

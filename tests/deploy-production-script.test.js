@@ -147,7 +147,7 @@ test('T6: health falho apos migration nao volta para a release anterior', { skip
   assert.match(s.log('sudo'), /stop aldeia\.service/, 'servico e parado para nao expor app defeituosa');
   assert.match(saida, new RegExp(shaNovo));
   assert.match(saida, new RegExp(s.shaMain));
-  assert.match(saida, /backup pre-deploy: |backup pre-deploy:/);
+  assert.match(saida, /backup pre-migration: \S+/, 'aponta o backup preservado');
   assert.match(saida, /runbook/i);
   assert.match(saida, /NAO houve rollback automatico/);
 }));

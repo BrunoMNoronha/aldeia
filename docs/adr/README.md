@@ -12,7 +12,8 @@ histórico, e o que muda é o *status* e a nota de supersessão.
 | [ADR-002](ADR-002-nextjs-app-router.md) | Migração incremental para Next.js (App Router) | **Aceito — parcialmente superseded** | 2026-08-16 | ADR-001 (framework web, direção de UI, ausência de build step, entry point) | ADR-003 (as partes que reafirmavam SQLite e `better-sqlite3`) | Express → Next.js 16 App Router em quatro fases (NX-0…NX-3). Transporte apenas; nenhuma regra financeira muda. |
 | [ADR-003](ADR-003-postgresql-persistencia.md) | Adotar PostgreSQL como persistência principal | **Aceito** | 2026-08-17 | ADR-001 e ADR-002 (SQLite como persistência, `DB_PATH`, PRAGMAs, `BEGIN IMMEDIATE`, acesso síncrono, T-03 sem serviço externo) | — | SQLite → PostgreSQL com driver `pg`, sem ORM, em oito fases (PG-0…PG-7). Registro da decisão que motivou o baseline v2.0. |
 | [ADR-004](ADR-004-deploy-producao-vps.md) | Produção em VPS com CI/CD automático a partir da `main` | **Aceito — parcialmente superseded** | 2026-08-18 | — | ADR-005 (rollback automático pós-migration, ciclo de vida da release, elegibilidade do SHA, gates de CI e de backup) | VPS + systemd + nginx + PostgreSQL 16 local; GitHub Actions dispara em push na `main`; release imutável por SHA; deploy live bloqueado por `PROD_DEPLOY_ENABLED=false` até o cutover PG-6. |
-| [ADR-005](ADR-005-hardening-deploy-producao.md) | Hardening e rollback seguro do deploy de produção | **Aceito** | 2026-08-19 | ADR-004 (rollback automático pós-migration, `rm -rf` da release, validação do SHA por mera existência, ref livre no `workflow_dispatch`, contagem de skips informativa, backup pré-deploy opcional) | — | Sem rollback automático depois de migration; release imutável com staging e selo; deploy restrito a commits da `main`; CI reprova suíte pulada; backup pré-migration fail-closed. |
+| [ADR-005](ADR-005-hardening-deploy-producao.md) | Hardening e rollback seguro do deploy de produção | **Aceito — parcialmente superseded** | 2026-08-19 | ADR-004 (rollback automático pós-migration, `rm -rf` da release, validação do SHA por mera existência, ref livre no `workflow_dispatch`, contagem de skips informativa, backup pré-deploy opcional) | ADR-006 (momento do backup e alcance do fail-safe) | Sem rollback automático depois de migration; release imutável com staging e selo; deploy restrito a commits da `main`; CI reprova suíte pulada; backup pré-migration fail-closed. |
+| [ADR-006](ADR-006-janela-manutencao-migrations.md) | Janela de manutenção segura para migrations de produção | **Aceito** | 2026-08-19 | ADR-005 (backup com a aplicação possivelmente atendendo; fail-safe restrito ao bloco de health) | — | Build fora da janela; aplicação parada e quiescência comprovada antes de backup e migration; `MIGRATION_STARTED` como ponto sem retorno; fail-safe global no `trap EXIT`; retorno automático só antes da primeira migration. |
 
 ## Supersessões, em detalhe
 
@@ -37,6 +38,9 @@ ADR-004  SHA apenas precisa existir ──────► ADR-005  SHA tem de se
 ADR-004  workflow_dispatch de qualquer ref► ADR-005  deploy só de refs/heads/main
 ADR-004  skips do CI meramente informados ► ADR-005  skip > 0 reprova o job
 ADR-004  backup pré-deploy opcional ──────► ADR-005  sem backup não há migration
+
+ADR-005  backup com a app atendendo ──────► ADR-006  app parada, backup quiescente
+ADR-005  fail-safe só no health falho ────► ADR-006  fail-safe global no trap EXIT
 ```
 
 **Permanece válido em todos eles**, e nenhum ADR toca: T-01 (Node.js), T-06

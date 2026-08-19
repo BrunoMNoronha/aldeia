@@ -52,17 +52,36 @@ A VPS também hospeda o FaithRO (rAthena + MariaDB, portas 5121/6121/6900,
      `/opt/aldeia/deploy-production.sh <GITHUB_SHA>` na VPS;
    - se `'true'` e a ref **não** for a `main` (ex.: `workflow_dispatch` numa
      branch): o job **falha** explicitamente e nada é implantado.
-4. O script remoto (fonte: `scripts/deploy-production.sh`) serializa com
-   `flock` e então: valida o formato do SHA → confirma que ele **pertence à
-   `main`** (`git merge-base --is-ancestor`; existir no repositório não basta) →
-   constrói em `releases/.staging-<sha>-<pid>` (`npm ci` + `npm run build`) e
-   promove atomicamente para `releases/<sha>` com o selo `.aldeia-release-ok` →
-   **backup pré-deploy fail-closed** → exige e executa `npm run
-   migrate:postgresql` (aborta se ausente — gate PG-6) → troca o symlink
-   `current` → `systemctl restart aldeia` → health check em
-   `http://127.0.0.1:3000/health` (30×2 s) → registra em
-   `/opt/aldeia/shared/deploy-history.log` → mantém as últimas 5 releases
-   (nunca a ativa nem a anterior).
+4. O script remoto (fonte: `scripts/deploy-production.sh`) serializa com `flock`
+   e roda em duas etapas — **fora** e **dentro** da janela de manutenção.
+
+### Fora da janela (aplicação continua no ar)
+
+Valida o formato do SHA → confirma que ele **pertence à `main`**
+(`git merge-base --is-ancestor`; existir no repositório não basta) → constrói em
+`releases/.staging-<sha>-<pid>` (`npm ci` + `npm run build`) e promove
+atomicamente para `releases/<sha>` com o selo `.aldeia-release-ok` → **gates
+pré-janela**: `migrate:postgresql` existe na revisão (gate PG-6), comando de
+backup executável, `/etc/aldeia/aldeia.env` legível. Um gate reprovado aqui
+**não custa indisponibilidade**: nada foi parado.
+
+### Janela crítica de manutenção (ADR-006)
+
+```text
+systemctl stop aldeia
+→ confirmar quiescência (systemctl is-active E /health têm de falhar)
+→ backup pg_dump com a aplicação parada  ← ponto consistente pré-migration
+→ MIGRATION_STARTED  ← ponto sem retorno automático
+→ npm run migrate:postgresql
+→ trocar o symlink current
+→ systemctl restart aldeia
+→ health check (30×2 s)
+→ sucesso: registra OK e JANELA-FIM, rotaciona releases (mantém 5)
+```
+
+**Todo deploy tem indisponibilidade planejada**: a janela dura backup +
+migrations + restart. É o preço de nunca ter código antigo atendendo contra um
+schema em mudança.
 
 ### Idempotência e reaproveitamento de release
 
@@ -71,17 +90,30 @@ Uma release nunca é apagada nem sobrescrita como etapa de deploy:
 | Situação do `releases/<sha>` | O que o deploy faz |
 |---|---|
 | não existe | constrói em staging e promove (o nome definitivo só aparece completo) |
-| existe **e é o `current`** | reexecução idempotente: só confere o health. Não reconstrói, não refaz backup, não repete migration, não apaga nada |
+| existe **e é o `current`** | reexecução idempotente: só confere o health. **Não abre janela**, não para o serviço, não refaz backup, não repete migration, não troca symlink, não apaga nada |
 | existe, selado, não é o `current` | reutiliza sem reconstruir |
 | existe **sem selo** (build interrompido) | descarta o parcial e reconstrói, com log explícito |
+
+### O que acontece quando algo falha
+
+| Momento da falha | Efeito |
+|---|---|
+| **antes da janela** (SHA, build, gates) | nada foi parado nem alterado |
+| **dentro da janela, antes da migration** (stop, backup) | schema intacto: a release anterior é **religada** (sem trocar `current`) e seu health é conferido; registra `RESTAURADO-PRE-MIGRATION`. Se a restauração não for segura, isso é dito explicitamente |
+| **depois de `MIGRATION_STARTED`** (migration, `ln`/`mv`, restart, health) | **serviço fica parado** deliberadamente; `current`, releases, backup e logs preservados; registra `FALHA-POS-MIGRATION`; **nenhum** rollback de código, migration ou banco |
+
+O fail-safe é global (um único `trap EXIT`), não depende do bloco de health, e
+nunca mascara o código de erro original.
 
 ### Códigos de saída do script
 
 `2` SHA malformado · `3` outro deploy em andamento · `4` SHA inexistente ·
 `5` SHA fora da `main` · `6` migrator PostgreSQL ausente (gate PG-6) ·
-`7` backup pré-deploy ausente/falho · `8` migration falhou (release **não**
-trocada) · `9` health falhou após a troca (estado preservado, serviço parado) ·
-`10` redeploy do SHA já ativo com health ruim (nada alterado).
+`7` backup ausente/falho · `8` migration falhou · `9` health falhou após a troca
+(estado preservado, serviço parado) · `10` redeploy do SHA já ativo com health
+ruim (nada alterado) · `11` não foi possível parar/quiescer a aplicação (nenhuma
+migration executada) · `12` arquivo de ambiente ausente/ilegível. Outros códigos
+vêm do comando que falhou.
 
 O comportamento operacional é versionado; os arquivos instalados na VPS são
 cópias dos templates do repo (`scripts/*.sh`, `deploy/systemd/*`,
@@ -140,8 +172,11 @@ sudo -u postgres dropdb aldeia_restore_test
 
 ## Rollback
 
-**Não existe rollback automático** (ADR-005). Quando o health check falha depois
-da troca de release, o deploy:
+**Não existe rollback automático depois que as migrations começam** (ADR-005 e
+ADR-006). Antes disso — falha ao parar a aplicação ou ao gerar o backup — a
+release anterior é religada automaticamente, porque o schema ainda está intacto.
+
+Quando o health check falha depois da troca de release, o deploy:
 
 1. registra `FALHA-HEALTH <sha>` em `/opt/aldeia/shared/deploy-history.log`;
 2. **para** `aldeia.service`, para não deixar aplicação defeituosa exposta;
@@ -211,8 +246,10 @@ Se o deploy automático precisar ser suspenso: Environment `production` →
 - Role `aldeia_app` é owner da database (DDL de migration e runtime na mesma
   role — o código atual não suporta separação; documentado no ADR-004).
 - Build roda na VPS (1 vCPU/2 GB): deploy demora alguns minutos; swap cobre o pico.
-- **Health falho pós-migration deixa o serviço parado** até intervenção humana
-  (ADR-005). É indisponibilidade explícita em vez de rollback arriscado.
+- **Qualquer falha pós-migration deixa o serviço parado** até intervenção humana
+  (ADR-005/ADR-006). É indisponibilidade explícita em vez de rollback arriscado.
+- **Todo deploy tem janela de indisponibilidade planejada** (ADR-006): a
+  aplicação fica parada durante backup, migrations e restart.
 - O script de deploy aceita overrides `ALDEIA_*` **usados apenas pelos testes
   automatizados** (`tests/deploy-production-script.test.js`). O deploy real não
   define nenhuma: a sessão SSH usa comando fixo e não encaminha ambiente.

@@ -117,11 +117,21 @@ function criarSandbox() {
   const logsPosix = paraPosix(logs);
   const backupsPosix = paraPosix(backups);
 
+  const binPosix = paraPosix(bin);
+  // `service-state` e a unica fonte de verdade sobre a aplicacao no sandbox:
+  // o systemctl falso a escreve e o curl falso a le, entao "parei o servico"
+  // e "ninguem responde no /health" deixam de ser afirmacoes independentes —
+  // e a ordem stop -> backup -> migration passa a ser observavel.
+  const estado = `${logsPosix}/service-state`;
+  const eventos = `${logsPosix}/eventos.log`;
+  fs.writeFileSync(path.join(logs, 'service-state'), 'inactive\n');
+
   // Stubs. Cada um registra a chamada; o comportamento e ditado por variaveis
   // que o proprio teste define na execucao (STUB_*).
   escreverStub(
     path.join(bin, 'npm'),
     `echo "$*" >> "${logsPosix}/npm.log"
+echo "npm $*" >> "${eventos}"
 if [[ "\${STUB_NPM_FALHA:-}" == "$1" ]]; then exit 1; fi
 if [[ "\${STUB_NPM_FALHA:-}" == "$2" ]]; then exit 1; fi
 exit 0`,
@@ -129,18 +139,59 @@ exit 0`,
   escreverStub(
     path.join(bin, 'curl'),
     `echo "$*" >> "${logsPosix}/curl.log"
+echo "curl" >> "${eventos}"
+# Aplicacao parada nao responde: e assim que o teste prova a quiescencia.
+[[ "$(cat "${estado}" 2>/dev/null)" == "active" ]] || exit 7
 [[ "\${STUB_HEALTH:-ok}" == "ok" ]] || exit 7
+exit 0`,
+  );
+  escreverStub(
+    path.join(bin, 'systemctl'),
+    `acao="$1"; shift || true
+case "$acao" in
+  is-active)
+    [[ "$(cat "${estado}" 2>/dev/null)" == "active" ]] && exit 0 || exit 3 ;;
+  start|restart)
+    echo "systemctl $acao" >> "${eventos}"
+    echo "$acao $*" >> "${logsPosix}/systemctl.log"
+    if [[ "\${STUB_RESTART:-ok}" == "falha" ]]; then echo "falha simulada no $acao" >&2; exit 1; fi
+    echo active > "${estado}" ;;
+  stop)
+    echo "systemctl stop" >> "${eventos}"
+    echo "stop $*" >> "${logsPosix}/systemctl.log"
+    if [[ "\${STUB_STOP:-ok}" == "falha" ]]; then exit 1; fi
+    echo inactive > "${estado}" ;;
+  *)
+    echo "$acao $*" >> "${logsPosix}/systemctl.log" ;;
+esac
 exit 0`,
   );
   escreverStub(
     path.join(bin, 'sudo'),
     `echo "$*" >> "${logsPosix}/sudo.log"
+# Delega para o systemctl falso: nunca executar o systemctl real (estes testes
+# tambem rodam em Linux, inclusive na propria VPS).
+args=()
+for a in "$@"; do
+  [[ "$a" == "-n" ]] && continue
+  [[ "$a" == */systemctl ]] && continue
+  args+=("$a")
+done
+if [[ "$*" == *systemctl* ]]; then exec "${binPosix}/systemctl" "\${args[@]}"; fi
 exit 0`,
   );
   escreverStub(path.join(bin, 'flock'), 'exit 0');
   escreverStub(
+    path.join(bin, 'ln'),
+    `echo "ln" >> "${eventos}"
+if [[ "\${STUB_LN:-ok}" == "falha" ]]; then echo "falha simulada no ln" >&2; exit 1; fi
+if [[ -x /usr/bin/ln ]]; then exec /usr/bin/ln "$@"; fi
+exec /bin/ln "$@"`,
+  );
+  escreverStub(
     path.join(bin, 'backup'),
     `echo "chamado" >> "${logsPosix}/backup.log"
+echo "backup" >> "${eventos}"
 [[ "\${STUB_BACKUP:-ok}" == "falha" ]] && exit 1
 if [[ "\${STUB_BACKUP:-ok}" == "vazio" ]]; then
   : > "${backupsPosix}/aldeia_producao_$(date -u +%Y%m%dT%H%M%S)_$RANDOM.dump"
@@ -160,6 +211,7 @@ exit 0`,
     ALDEIA_HEALTH_TRIES: '2',
     ALDEIA_HEALTH_INTERVAL: '0',
     ALDEIA_MAIN_REF: 'refs/heads/main',
+    ALDEIA_UNIT: 'aldeia.service',
   };
 
   return {
@@ -177,6 +229,28 @@ exit 0`,
     log(nome) {
       const p = path.join(logs, `${nome}.log`);
       return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+    },
+    /** Linhas de `eventos.log`, na ordem em que o deploy as produziu. */
+    eventos() {
+      const p = path.join(logs, 'eventos.log');
+      if (!fs.existsSync(p)) return [];
+      return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
+    },
+    /** Estado da aplicacao falsa: 'active' | 'inactive'. */
+    servico() {
+      return fs.readFileSync(path.join(logs, 'service-state'), 'utf8').trim();
+    },
+    /** Conteudo de shared/deploy-history.log. */
+    historico() {
+      const p = path.join(base, 'shared', 'deploy-history.log');
+      return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+    },
+    /** Zera os registros, para afirmar sobre o que UM deploy especifico fez. */
+    limparRegistros() {
+      for (const nome of ['npm', 'curl', 'sudo', 'backup', 'systemctl']) {
+        fs.rmSync(path.join(logs, `${nome}.log`), { force: true });
+      }
+      fs.rmSync(path.join(logs, 'eventos.log'), { force: true });
     },
     novoCommitMain() {
       fs.appendFileSync(path.join(origem, 'package.json'), '');

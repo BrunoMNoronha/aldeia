@@ -33,7 +33,7 @@
 //     inventado.
 
 const { withTransaction } = require('../db/connection');
-const { TIPO_AJUSTE } = require('../domain/constants');
+const { TIPO_AJUSTE, ATOR_PADRAO } = require('../domain/constants');
 
 /**
  * Vocabulario de origem aceito no lancamento MANUAL desta fase.
@@ -49,8 +49,9 @@ const ORIGENS_MANUAIS = Object.freeze(['pagamento', 'deposito']);
  */
 const TIPO_ENTRADA = 'credito';
 
-/** Sem autenticacao nesta fase: ator tecnico, coerente com o default do schema. */
-const ATOR_PADRAO = 'sistema';
+// `ATOR_PADRAO` (ator tecnico, coerente com o default do schema) vem de
+// `domain/constants`: as trilhas SQLite e PostgreSQL precisam do MESMO padrao e
+// nenhuma delas pode depender da outra. Continua reexportado por este modulo.
 
 /** Marca na auditoria que o lancamento foi digitado, nao derivado da planilha. */
 const ORIGEM_REGISTRO = 'manual';

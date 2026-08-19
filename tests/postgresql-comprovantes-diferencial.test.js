@@ -414,3 +414,165 @@ test('DIFERENCIAL E: ids no limite do int4 respondem igual nos dois bancos', { s
 function idsSqliteValido(db) {
   return db.prepare('SELECT MIN(id) AS id FROM movimento_financeiro').get().id;
 }
+
+// =============================================================================
+// ESCRITA (PG-2B2) — a mesma sequencia de negocio nos dois bancos
+// =============================================================================
+//
+// A leitura ja e comparada acima. A gravacao tem uma superficie propria que so
+// aparece quando alguem ESCREVE: o resultado declarado (`alteracao`), o que
+// conta como reenvio identico e o conteudo da trilha de auditoria. Aqui as duas
+// trilhas executam a MESMA sequencia e os resultados sao comparados entre si.
+
+/** Sequencia de negocio: criar -> reenviar igual -> mudar estado -> mudar observacao. */
+const SEQUENCIA = [
+  { estado: 'pendente', observacao: 'Comprovante solicitado ao associado.' },
+  { estado: 'pendente', observacao: 'Comprovante solicitado ao associado.' },
+  { estado: 'presente', observacao: 'Comprovante solicitado ao associado.' },
+  { estado: 'presente', observacao: 'Recebido por e-mail.' },
+];
+
+const SQL_MOVIMENTO_SOLO = `
+  INSERT INTO movimento_financeiro
+    (data, valor_centavos, tipo, origem, estado_identificacao, ativo)
+  VALUES ('2026-06-01', 12345, 'credito', 'pagamento', 'nao_identificado', `;
+
+/** Estado serializado na trilha, sem o que os dois bancos nao podem ter igual. */
+function normalizarEstadoAuditado(texto) {
+  if (texto === null || texto === undefined) return null;
+  const estado = JSON.parse(texto);
+  return {
+    estado: estado.estado,
+    observacao: estado.observacao,
+    referenciaExterna: estado.referenciaExterna,
+    data: estado.data,
+    formatoCriadoEm: TIMESTAMP_RE.test(estado.criadoEm),
+    formatoAtualizadoEm: TIMESTAMP_RE.test(estado.atualizadoEm),
+  };
+}
+
+/**
+ * Entrada de auditoria comparavel. `entidade_id` e o id do comprovante, que as
+ * duas sequences geram de forma independente: comparamos se ele APONTA para o
+ * comprovante certo, nao o numero.
+ */
+function normalizarAuditoria(linha, comprovanteId, movimentoId) {
+  return {
+    ator: linha.ator,
+    acao: linha.acao,
+    entidadeTipo: linha.entidade_tipo,
+    entidadeIdApontaParaOComprovante: linha.entidade_id === String(comprovanteId),
+    estadoAnterior: normalizarEstadoAuditado(linha.estado_anterior),
+    estadoPosterior: normalizarEstadoAuditado(linha.estado_posterior),
+    metadados: { ...JSON.parse(linha.metadados), movimentoId: linha.metadados === null ? null : '<movimento>' },
+    metadadosApontaParaOMovimento: JSON.parse(linha.metadados).movimentoId === movimentoId,
+  };
+}
+
+test('DIFERENCIAL PG-2B2: criar, reenviar, alterar estado e alterar observacao', { skip }, async (t) => {
+  const { db } = createMigratedDb(t);
+  const movimentoSqlite = Number(
+    db.prepare(`${SQL_MOVIMENTO_SOLO}1)`).run().lastInsertRowid
+  );
+
+  const { pool } = await schemaIsolado(t);
+  await runMigrations(pool);
+  const { rows } = await pool.query(`${SQL_MOVIMENTO_SOLO}true) RETURNING id`);
+  const movimentoPg = rows[0].id;
+
+  const resultadosSqlite = SEQUENCIA.map((passo) =>
+    sqlite.definirComprovanteDoMovimento(db, { movimentoId: movimentoSqlite, ...passo })
+  );
+  const resultadosPg = [];
+  for (const passo of SEQUENCIA) {
+    // Em serie de proposito: a sequencia e um historico, nao uma disputa.
+    resultadosPg.push(
+      await postgresql.definirComprovanteDoMovimento(pool, { movimentoId: movimentoPg, ...passo })
+    );
+  }
+
+  // 1. O que ACONTECEU em cada passo tem de ser identico.
+  assert.deepEqual(
+    resultadosPg.map((r) => r.alteracao),
+    resultadosSqlite.map((r) => r.alteracao),
+    'a sequencia de resultados declarados divergiu'
+  );
+  assert.deepEqual(
+    resultadosSqlite.map((r) => r.alteracao),
+    ['registrado', 'sem_mudanca', 'alterado', 'alterado'],
+    'e a sequencia esperada e esta — o oraculo tambem precisa estar certo'
+  );
+
+  // 2. A evidencia resultante de cada passo, campo a campo.
+  for (let i = 0; i < SEQUENCIA.length; i += 1) {
+    assert.deepEqual(
+      normalizarEvidencia(resultadosPg[i]),
+      normalizarEvidencia(resultadosSqlite[i]),
+      `evidencia divergiu no passo ${i + 1}`
+    );
+  }
+
+  // 3. Uma linha de comprovante em cada banco: alterar nunca cria uma segunda.
+  const totalSqlite = db.prepare('SELECT COUNT(*) AS total FROM comprovante').get().total;
+  const totalPg = Number((await pool.query('SELECT COUNT(*) AS total FROM comprovante')).rows[0].total);
+  assert.equal(totalPg, totalSqlite);
+  assert.equal(totalPg, 1);
+
+  // 4. A trilha: mesma quantidade e mesmo conteudo semantico.
+  const auditSqlite = db.prepare('SELECT * FROM audit_log ORDER BY id ASC').all();
+  const auditPg = (await pool.query('SELECT * FROM audit_log ORDER BY id ASC')).rows;
+
+  assert.equal(auditPg.length, auditSqlite.length, 'quantidade de auditorias divergiu');
+  assert.equal(auditSqlite.length, 3, 'o reenvio identico nao gera trilha');
+
+  const comprovanteSqlite = resultadosSqlite[0].registro.id;
+  const comprovantePg = resultadosPg[0].registro.id;
+  for (let i = 0; i < auditSqlite.length; i += 1) {
+    assert.deepEqual(
+      normalizarAuditoria(auditPg[i], comprovantePg, movimentoPg),
+      normalizarAuditoria(auditSqlite[i], comprovanteSqlite, movimentoSqlite),
+      `auditoria ${i + 1} divergiu`
+    );
+  }
+});
+
+test('DIFERENCIAL PG-2B2: recusas de gravacao usam o mesmo codigo nos dois bancos', { skip }, async (t) => {
+  const { db } = createMigratedDb(t);
+  const movimentoSqlite = Number(db.prepare(`${SQL_MOVIMENTO_SOLO}1)`).run().lastInsertRowid);
+
+  const { pool } = await schemaIsolado(t);
+  await runMigrations(pool);
+  const { rows } = await pool.query(`${SQL_MOVIMENTO_SOLO}true) RETURNING id`);
+  const movimentoPg = rows[0].id;
+
+  const casos = [
+    { descricao: 'id invalido', entrada: () => ({ movimentoId: 0, estado: 'pendente' }) },
+    { descricao: 'estado fora do vocabulario', entrada: (id) => ({ movimentoId: id, estado: 'OK' }) },
+    { descricao: 'estado tecnico como dominio', entrada: (id) => ({ movimentoId: id, estado: 'sem_registro' }) },
+    { descricao: 'observacao nao textual', entrada: (id) => ({ movimentoId: id, estado: 'pendente', observacao: 42 }) },
+    { descricao: 'movimento inexistente', entrada: () => ({ movimentoId: 987654, estado: 'pendente' }) },
+  ];
+
+  for (const caso of casos) {
+    const erroSqlite = capturar(() =>
+      sqlite.definirComprovanteDoMovimento(db, caso.entrada(movimentoSqlite))
+    );
+    let erroPg;
+    try {
+      await postgresql.definirComprovanteDoMovimento(pool, caso.entrada(movimentoPg));
+      assert.fail(`PostgreSQL aceitou o que o SQLite recusou: ${caso.descricao}`);
+    } catch (erro) {
+      erroPg = erro;
+    }
+
+    assert.equal(erroPg.name, erroSqlite.name, `${caso.descricao}: tipo de erro divergiu`);
+    assert.equal(erroPg.codigo, erroSqlite.codigo, `${caso.descricao}: codigo divergiu`);
+  }
+
+  // Recusa nao escreve — nos dois bancos.
+  assert.equal(db.prepare('SELECT COUNT(*) AS total FROM comprovante').get().total, 0);
+  assert.equal(
+    Number((await pool.query('SELECT COUNT(*) AS total FROM comprovante')).rows[0].total),
+    0
+  );
+});

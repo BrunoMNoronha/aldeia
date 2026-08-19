@@ -24,7 +24,7 @@
 //      O primeiro e o estado TECNICO `sem_registro`; o segundo e o estado de
 //      dominio 'ausente'. Somente o segundo entra na fila de pendencia.
 
-const { ESTADO_COMPROVANTE } = require('../domain/constants');
+const { ESTADO_COMPROVANTE, ATOR_PADRAO } = require('../domain/constants');
 const { PAGINACAO } = require('./paginacao');
 
 /**
@@ -47,6 +47,30 @@ const SEM_REGISTRO = 'sem_registro';
  * nenhum dos dois e pendencia.
  */
 const ESTADOS_PENDENTES = Object.freeze(['pendente', 'ausente']);
+
+// --- vocabulario da GRAVACAO (compartilhado desde a PG-2B2) ------------------
+
+/**
+ * Resultado declarado de uma gravacao, para que o chamador saiba o que
+ * ACONTECEU sem comparar objetos:
+ *   registrado  -> o movimento nao tinha comprovante e passou a ter;
+ *   alterado    -> estado e/ou observacao mudaram;
+ *   sem_mudanca -> reenvio identico; nada foi gravado e nada foi auditado.
+ */
+const ALTERACAO = Object.freeze({
+  registrado: 'registrado',
+  alterado: 'alterado',
+  semMudanca: 'sem_mudanca',
+});
+
+/** Marca na auditoria que a decisao foi tomada por uma pessoa, nao derivada. */
+const ORIGEM_REGISTRO = 'manual';
+
+const ACAO_COMPROVANTE_REGISTRADO = 'comprovante.registrado';
+const ACAO_COMPROVANTE_ALTERADO = 'comprovante.alterado';
+
+/** Provado na propria trilha: a observacao nao decidiu o estado. */
+const CRITERIO_ESTADO_EXPLICITO = 'estado informado explicitamente pelo operador';
 
 /**
  * Erro de dominio do comprovante.
@@ -149,6 +173,14 @@ function exigirEstadoPendente(valor) {
     );
   }
   return [estado];
+}
+
+/**
+ * Ator tecnico da gravacao. Nao autentica ninguem e nao inventa usuario: um
+ * texto vazio ou ausente cai no `ATOR_PADRAO` do dominio (C-07 TO CONFIRM).
+ */
+function exigirAtor(valor) {
+  return textoOpcional(valor, 'ator') ?? ATOR_PADRAO;
 }
 
 /** Limite e offset da fila, com a faixa unica de `./paginacao`. */
@@ -315,10 +347,16 @@ module.exports = {
   ESTADOS,
   ESTADOS_PENDENTES,
   SEM_REGISTRO,
+  ALTERACAO,
+  ORIGEM_REGISTRO,
+  ACAO_COMPROVANTE_REGISTRADO,
+  ACAO_COMPROVANTE_ALTERADO,
+  CRITERIO_ESTADO_EXPLICITO,
   ComprovanteError,
   descrever,
   exigirId,
   textoOpcional,
+  exigirAtor,
   exigirEstado,
   exigirEstadoPendente,
   exigirParametroDePagina,

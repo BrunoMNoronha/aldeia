@@ -56,13 +56,31 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Testes (SQLite + PostgreSQL efemero)
-        run: npm test 2>&1 | tee test-output.log
-      - name: Resumo da suite (pass/fail/skip)
+        shell: bash
         run: |
-          echo '## Resumo dos testes' >> "$GITHUB_STEP_SUMMARY"
-          grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo)' test-output.log >> "$GITHUB_STEP_SUMMARY" || true
-          skipped="$(grep -E '^# skipped' test-output.log | grep -oE '[0-9]+' || echo 0)"
-          echo "testes pulados: $skipped (esperado ~0 com TEST_DATABASE_URL definida)"
+          # pipefail e obrigatorio: sem ele o `tee` mascara a falha do npm test.
+          set -o pipefail
+          npm test 2>&1 | tee test-output.log
+      - name: Gate da suite (nenhum teste pulado)
+        shell: bash
+        run: |
+          {
+            echo '## Resumo dos testes'
+            echo '```'
+            grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo)' test-output.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          skipped="$(grep -oE '^# skipped [0-9]+' test-output.log | grep -oE '[0-9]+$' || true)"
+          # Fail-closed: nao conseguir ler a contagem conta como reprovacao.
+          if [[ -z "$skipped" ]]; then
+            echo "::error title=Resumo da suite ilegivel::nao foi possivel ler a contagem de testes pulados em test-output.log"
+            exit 1
+          fi
+          echo "testes pulados: $skipped"
+          if [[ "$skipped" -ne 0 ]]; then
+            echo "::error title=Suite incompleta::$skipped teste(s) pulado(s). Com TEST_DATABASE_URL configurada a suite PostgreSQL (ADR-003) tem de rodar por inteiro; uma suite pulada nao e um CI verde. Investigar o PostgreSQL efemero do CI — nunca apontar o CI para DATABASE_URL de producao."
+            exit 1
+          fi
       - run: npm run build
 
   deploy:
@@ -76,8 +94,17 @@ jobs:
         run: |
           echo "::notice title=Deploy live bloqueado por gate explicito::PROD_DEPLOY_ENABLED=false — a infraestrutura de producao esta preparada e este pipeline esta ativo, mas o go-live aguarda a conclusao do cutover PG-6 (PostgreSQL como runtime, ADR-003). Nenhum acesso a VPS foi realizado nesta execucao."
           echo "AMBIENTE_VPS_PREPARADO=sim | CI_CD_MAIN_CONFIGURADO=sim | PRODUCAO_ATIVA=nao (aguardando PG-6)"
+      - name: Gate de ref (producao recebe somente a main)
+        # `workflow_dispatch` permite escolher qualquer ref. Producao so aceita
+        # codigo incorporado a main: qualquer outra ref e recusada com falha
+        # explicita, nunca com um deploy silencioso. A VPS repete esta checagem
+        # (git merge-base --is-ancestor), entao a garantia nao depende do YAML.
+        if: vars.PROD_DEPLOY_ENABLED == 'true' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error title=Deploy recusado::disparo em ${{ github.ref }}. Producao recebe somente commits incorporados a refs/heads/main. A validacao (test + build) desta ref ja rodou; o deploy nao acontece."
+          exit 1
       - name: Preparar SSH (chave dedicada + host key verificada)
-        if: vars.PROD_DEPLOY_ENABLED == 'true'
+        if: vars.PROD_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
         env:
           PROD_SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
           PROD_SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
@@ -88,7 +115,7 @@ jobs:
           printf '%s\n' "$PROD_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
       - name: Deploy do SHA exato
-        if: vars.PROD_DEPLOY_ENABLED == 'true'
+        if: vars.PROD_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
         env:
           PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
           PROD_SSH_PORT: ${{ secrets.PROD_SSH_PORT }}
@@ -105,7 +132,7 @@ jobs:
             "$PROD_SSH_USER@$PROD_SSH_HOST" \
             "/opt/aldeia/deploy-production.sh '$GITHUB_SHA'"
       - name: Verificar SHA implantado
-        if: vars.PROD_DEPLOY_ENABLED == 'true'
+        if: vars.PROD_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
         env:
           PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
           PROD_SSH_PORT: ${{ secrets.PROD_SSH_PORT }}

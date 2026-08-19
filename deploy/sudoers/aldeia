@@ -1,0 +1,6 @@
+# Privilegio minimo do usuario de servico (template versionado, sem secrets).
+# Instalado em /etc/sudoers.d/aldeia (root:root, 0440), validado com `visudo -cf`.
+#
+# `stop` e necessario desde o ADR-005: quando o health check falha depois das
+# migrations, o deploy para o servico em vez de fazer rollback automatico.
+aldeia ALL=(root) NOPASSWD: /usr/bin/systemctl restart aldeia.service, /usr/bin/systemctl stop aldeia.service, /usr/bin/systemctl status aldeia.service

@@ -1,4 +1,4 @@
-# Runbook — Produção na VPS (ADR-004)
+# Runbook — Produção na VPS (ADR-004, endurecido pelo ADR-005)
 
 Somente informação **não secreta**. Segredos vivem em `/etc/aldeia/aldeia.env`
 na VPS e no GitHub Environment `production` — nunca aqui, nunca no Git.
@@ -29,7 +29,7 @@ A VPS também hospeda o FaithRO (rAthena + MariaDB, portas 5121/6121/6900,
 | SSH | porta **22022** (UFW allow); alias local `faithro-vps` |
 | Node | **22 LTS** (NodeSource; pinado em `.nvmrc` — CI e produção usam o mesmo major) |
 | PostgreSQL | **16** (PGDG), loopback-only |
-| Usuário do serviço | `aldeia` (não-root, sem sudo geral; sudoers restrito a `systemctl restart/status aldeia.service`) |
+| Usuário do serviço | `aldeia` (não-root, sem sudo geral; sudoers restrito a `systemctl restart/stop/status aldeia.service`) |
 | App | `/opt/aldeia/{releases,current,repo,shared}` |
 | Config | `/etc/aldeia/aldeia.env` (root:aldeia, 640) |
 | Backups | `/var/backups/aldeia/postgresql/` (aldeia, 750) |
@@ -41,22 +41,56 @@ A VPS também hospeda o FaithRO (rAthena + MariaDB, portas 5121/6121/6900,
 1. Push incorporado à `main` dispara `.github/workflows/deploy-production.yml`.
 2. Job `validate`: `npm ci` → `npm test` (PostgreSQL 16 efêmero de CI via
    `TEST_DATABASE_URL`; `DATABASE_URL` nunca é definida no CI) → `npm run build`.
+   **Qualquer teste pulado reprova o job**: com `TEST_DATABASE_URL` configurada
+   a suíte PostgreSQL tem de rodar inteira, e `skipped != 0` (ou resumo
+   ilegível) é falha, não aviso.
 3. Job `deploy` (Environment `production`):
    - se `PROD_DEPLOY_ENABLED != 'true'`: informa que o go-live está bloqueado
      pelo **gate PG-6** e termina verde, sem tocar a VPS;
-   - se `'true'`: SSH com chave dedicada + `StrictHostKeyChecking=yes` e executa
-     `/opt/aldeia/deploy-production.sh <GITHUB_SHA>` na VPS.
-4. O script remoto (fonte: `scripts/deploy-production.sh`) valida o SHA,
-   serializa com `flock`, materializa `releases/<sha>` via `git archive`,
-   `npm ci` + `npm run build`, **backup pré-deploy**, exige e executa
-   `npm run migrate:postgresql` (aborta se ausente — gate PG-6), troca o
-   symlink `current` atomicamente, `systemctl restart aldeia`, health check em
-   `http://127.0.0.1:3000/health` (30×2 s), registra em
-   `/opt/aldeia/shared/deploy-history.log` e mantém as últimas 5 releases.
+   - se `'true'` **e** a ref for `refs/heads/main`: SSH com chave dedicada +
+     `StrictHostKeyChecking=yes` e executa
+     `/opt/aldeia/deploy-production.sh <GITHUB_SHA>` na VPS;
+   - se `'true'` e a ref **não** for a `main` (ex.: `workflow_dispatch` numa
+     branch): o job **falha** explicitamente e nada é implantado.
+4. O script remoto (fonte: `scripts/deploy-production.sh`) serializa com
+   `flock` e então: valida o formato do SHA → confirma que ele **pertence à
+   `main`** (`git merge-base --is-ancestor`; existir no repositório não basta) →
+   constrói em `releases/.staging-<sha>-<pid>` (`npm ci` + `npm run build`) e
+   promove atomicamente para `releases/<sha>` com o selo `.aldeia-release-ok` →
+   **backup pré-deploy fail-closed** → exige e executa `npm run
+   migrate:postgresql` (aborta se ausente — gate PG-6) → troca o symlink
+   `current` → `systemctl restart aldeia` → health check em
+   `http://127.0.0.1:3000/health` (30×2 s) → registra em
+   `/opt/aldeia/shared/deploy-history.log` → mantém as últimas 5 releases
+   (nunca a ativa nem a anterior).
+
+### Idempotência e reaproveitamento de release
+
+Uma release nunca é apagada nem sobrescrita como etapa de deploy:
+
+| Situação do `releases/<sha>` | O que o deploy faz |
+|---|---|
+| não existe | constrói em staging e promove (o nome definitivo só aparece completo) |
+| existe **e é o `current`** | reexecução idempotente: só confere o health. Não reconstrói, não refaz backup, não repete migration, não apaga nada |
+| existe, selado, não é o `current` | reutiliza sem reconstruir |
+| existe **sem selo** (build interrompido) | descarta o parcial e reconstrói, com log explícito |
+
+### Códigos de saída do script
+
+`2` SHA malformado · `3` outro deploy em andamento · `4` SHA inexistente ·
+`5` SHA fora da `main` · `6` migrator PostgreSQL ausente (gate PG-6) ·
+`7` backup pré-deploy ausente/falho · `8` migration falhou (release **não**
+trocada) · `9` health falhou após a troca (estado preservado, serviço parado) ·
+`10` redeploy do SHA já ativo com health ruim (nada alterado).
 
 O comportamento operacional é versionado; os arquivos instalados na VPS são
 cópias dos templates do repo (`scripts/*.sh`, `deploy/systemd/*`,
-`deploy/nginx/*`). **Alterou o template → reinstale a cópia na VPS.**
+`deploy/nginx/*`, `deploy/sudoers/*`). **Alterou o template → reinstale a cópia
+na VPS.** Conferir se a cópia está em dia:
+
+```bash
+sha256sum /opt/aldeia/deploy-production.sh   # comparar com o do repo
+```
 
 ## Verificações
 
@@ -98,19 +132,44 @@ sudo -u postgres psql -d aldeia_restore_test -c '\dt'   # conferir schema/contag
 sudo -u postgres dropdb aldeia_restore_test
 ```
 
+- O backup pré-deploy é **fail-closed**: se a ferramenta estiver ausente,
+  retornar erro ou não gerar um dump novo e não vazio, **nenhuma migration
+  começa** e o deploy falha com código 7.
 - **Backup off-site: pendente de decisão/aprovação.** Backup na mesma VPS não é
   disaster recovery.
 
 ## Rollback
 
-- **Código**: em falha de health, o deploy script volta o symlink para a
-  release anterior e reinicia — automático. Manual:
-  `ln -sfn /opt/aldeia/releases/<sha-anterior> /opt/aldeia/current && sudo systemctl restart aldeia`.
-- **Banco**: nunca reverter migration automaticamente, nunca editar migration
-  aplicada. Uma migration já aplicada pode tornar a release anterior
-  incompatível — antes de voltar código após uma migration, provar
-  compatibilidade; se não der, manter o serviço parado/degradado e intervir de
-  forma controlada com o backup pré-deploy como evidência.
+**Não existe rollback automático** (ADR-005). Quando o health check falha depois
+da troca de release, o deploy:
+
+1. registra `FALHA-HEALTH <sha>` em `/opt/aldeia/shared/deploy-history.log`;
+2. **para** `aldeia.service`, para não deixar aplicação defeituosa exposta;
+3. **preserva** `current` (apontando para a release nova), a release anterior, o
+   backup pré-deploy e os logs;
+4. falha com código 9, imprimindo SHA novo, SHA anterior e caminho do backup.
+
+O motivo é direto: as migrations desta release **já foram aplicadas ao banco**.
+Voltar o código anterior sem prova de compatibilidade com o schema novo é rodar
+código velho contra schema novo — risco sobre dado financeiro (T-06/T-07). Por
+isso a volta é decisão humana:
+
+```bash
+journalctl -u aldeia -n 200 --no-pager        # por que o health falhou
+tail -5 /opt/aldeia/shared/deploy-history.log # SHA novo e histórico
+readlink -f /opt/aldeia/current               # release ativa preservada
+```
+
+- **Se a causa for do código e a release anterior for comprovadamente compatível
+  com o schema atual** (nenhuma migration desta leva mudança incompatível):
+  `ln -sfn /opt/aldeia/releases/<sha-anterior> /opt/aldeia/current && sudo systemctl restart aldeia`,
+  seguido de `curl --fail http://127.0.0.1:3000/health`.
+- **Se a compatibilidade não puder ser provada**: mantenha o serviço parado e
+  corrija adiante (nova revisão na `main` + novo deploy). Nunca reverter
+  migration, nunca editar migration aplicada (T-05), nunca restaurar o banco por
+  impulso — o backup pré-deploy existe como evidência e último recurso, e um
+  restore é operação deliberada, não parte do deploy.
+- **Banco**: migration aplicada é imutável; correção entra como migration nova.
 
 ## GitHub — secrets e variáveis (somente nomes)
 
@@ -152,3 +211,8 @@ Se o deploy automático precisar ser suspenso: Environment `production` →
 - Role `aldeia_app` é owner da database (DDL de migration e runtime na mesma
   role — o código atual não suporta separação; documentado no ADR-004).
 - Build roda na VPS (1 vCPU/2 GB): deploy demora alguns minutos; swap cobre o pico.
+- **Health falho pós-migration deixa o serviço parado** até intervenção humana
+  (ADR-005). É indisponibilidade explícita em vez de rollback arriscado.
+- O script de deploy aceita overrides `ALDEIA_*` **usados apenas pelos testes
+  automatizados** (`tests/deploy-production-script.test.js`). O deploy real não
+  define nenhuma: a sessão SSH usa comando fixo e não encaminha ambiente.

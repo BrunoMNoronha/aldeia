@@ -11,7 +11,8 @@ histórico, e o que muda é o *status* e a nota de supersessão.
 | [ADR-001](ADR-001-arquitetura-inicial.md) | Arquitetura inicial do MVP | **Aceito — parcialmente superseded** | 2026-08-16 | — | ADR-002 (Express, UI, build step), ADR-003 (SQLite, `better-sqlite3`, PRAGMAs, `BEGIN IMMEDIATE`) | Node.js + Express + SQLite, migrations SQL versionadas sem ORM, dinheiro em centavos inteiros, inativação em vez de exclusão. |
 | [ADR-002](ADR-002-nextjs-app-router.md) | Migração incremental para Next.js (App Router) | **Aceito — parcialmente superseded** | 2026-08-16 | ADR-001 (framework web, direção de UI, ausência de build step, entry point) | ADR-003 (as partes que reafirmavam SQLite e `better-sqlite3`) | Express → Next.js 16 App Router em quatro fases (NX-0…NX-3). Transporte apenas; nenhuma regra financeira muda. |
 | [ADR-003](ADR-003-postgresql-persistencia.md) | Adotar PostgreSQL como persistência principal | **Aceito** | 2026-08-17 | ADR-001 e ADR-002 (SQLite como persistência, `DB_PATH`, PRAGMAs, `BEGIN IMMEDIATE`, acesso síncrono, T-03 sem serviço externo) | — | SQLite → PostgreSQL com driver `pg`, sem ORM, em oito fases (PG-0…PG-7). Registro da decisão que motivou o baseline v2.0. |
-| [ADR-004](ADR-004-deploy-producao-vps.md) | Produção em VPS com CI/CD automático a partir da `main` | **Aceito** | 2026-08-18 | — | — | VPS + systemd + nginx + PostgreSQL 16 local; GitHub Actions dispara em push na `main`; release imutável por SHA; deploy live bloqueado por `PROD_DEPLOY_ENABLED=false` até o cutover PG-6. |
+| [ADR-004](ADR-004-deploy-producao-vps.md) | Produção em VPS com CI/CD automático a partir da `main` | **Aceito — parcialmente superseded** | 2026-08-18 | — | ADR-005 (rollback automático pós-migration, ciclo de vida da release, elegibilidade do SHA, gates de CI e de backup) | VPS + systemd + nginx + PostgreSQL 16 local; GitHub Actions dispara em push na `main`; release imutável por SHA; deploy live bloqueado por `PROD_DEPLOY_ENABLED=false` até o cutover PG-6. |
+| [ADR-005](ADR-005-hardening-deploy-producao.md) | Hardening e rollback seguro do deploy de produção | **Aceito** | 2026-08-19 | ADR-004 (rollback automático pós-migration, `rm -rf` da release, validação do SHA por mera existência, ref livre no `workflow_dispatch`, contagem de skips informativa, backup pré-deploy opcional) | — | Sem rollback automático depois de migration; release imutável com staging e selo; deploy restrito a commits da `main`; CI reprova suíte pulada; backup pré-migration fail-closed. |
 
 ## Supersessões, em detalhe
 
@@ -29,6 +30,13 @@ ADR-002  better-sqlite3 + PRAGMAs ────────► ADR-003  pg (node-
 ADR-002  BEGIN IMMEDIATE ─────────────────► ADR-003  BEGIN/COMMIT/ROLLBACK
 ADR-002  acesso síncrono ao banco ────────► ADR-003  async/await
 ADR-002  T-03 sem serviço externo ────────► ADR-003  PostgreSQL é o único obrigatório
+
+ADR-004  rollback automático de código ───► ADR-005  parar o serviço e preservar tudo
+ADR-004  rm -rf da release no deploy ─────► ADR-005  staging + promoção atômica + selo
+ADR-004  SHA apenas precisa existir ──────► ADR-005  SHA tem de ser ancestral da main
+ADR-004  workflow_dispatch de qualquer ref► ADR-005  deploy só de refs/heads/main
+ADR-004  skips do CI meramente informados ► ADR-005  skip > 0 reprova o job
+ADR-004  backup pré-deploy opcional ──────► ADR-005  sem backup não há migration
 ```
 
 **Permanece válido em todos eles**, e nenhum ADR toca: T-01 (Node.js), T-06

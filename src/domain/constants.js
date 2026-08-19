@@ -24,6 +24,17 @@ const STATUS_IMPORTACAO = Object.freeze(['pendente', 'concluida', 'falhou', 'rev
 
 const ESTADO_REVISAO_CELULA = Object.freeze(['nao_revisado', 'revisado', 'ambiguo', 'descartado']);
 
+/**
+ * Ator tecnico gravado em `audit_log` quando ninguem foi informado — o mesmo
+ * valor do DEFAULT da coluna nas duas migrations.
+ *
+ * Mora aqui, e nao num service, porque as trilhas SQLite e PostgreSQL precisam
+ * do MESMO padrao e nenhuma delas pode depender da outra para obte-lo. Nao ha
+ * autenticacao nesta fase: este ator e uma representacao tecnica, nunca um
+ * usuario inventado (C-07 segue TO CONFIRM).
+ */
+const ATOR_PADRAO = 'sistema';
+
 const ENTIDADES_LEGACY_LINK = Object.freeze([
   'associado',
   'competencia',
@@ -44,5 +55,6 @@ module.exports = {
   ESTADO_PENDENCIA,
   STATUS_IMPORTACAO,
   ESTADO_REVISAO_CELULA,
+  ATOR_PADRAO,
   ENTIDADES_LEGACY_LINK,
 };

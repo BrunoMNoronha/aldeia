@@ -12,12 +12,11 @@
 // Sem dual-write e sem sincronizacao: so enxerga o que ja estiver no PostgreSQL.
 //
 // ---------------------------------------------------------------------------
-// SOMENTE LEITURA — a escrita e a PG-2B2
+// LEITURA (PG-2B1) + ESCRITA (PG-2B2)
 // ---------------------------------------------------------------------------
-// `definirComprovanteDoMovimento` NAO foi convertida. Ela envolve INSERT/UPDATE,
-// `audit_log`, idempotencia e rollback atomico (T-07 / F-11), e converter isso
-// junto com as leituras misturaria riscos muito diferentes na mesma revisao.
-// Nada aqui abre transacao, grava ou audita.
+// `definirComprovanteDoMovimento` esta convertida: INSERT/UPDATE e `audit_log`
+// na MESMA transacao (T-07 / F-11), com idempotencia e rollback provados por
+// teste. As leituras continuam puras — nenhuma delas abre transacao ou grava.
 //
 // ---------------------------------------------------------------------------
 // Camadas (T-08)
@@ -40,8 +39,16 @@ const {
   ESTADOS,
   ESTADOS_PENDENTES,
   SEM_REGISTRO,
+  ALTERACAO,
+  ORIGEM_REGISTRO,
+  ACAO_COMPROVANTE_REGISTRADO,
+  ACAO_COMPROVANTE_ALTERADO,
+  CRITERIO_ESTADO_EXPLICITO,
   ComprovanteError,
   exigirId,
+  textoOpcional,
+  exigirAtor,
+  exigirEstado,
   exigirEstadoPendente,
   exigirPaginacao,
   evidenciaSemRegistro,
@@ -51,6 +58,7 @@ const {
   mapearItemDaFila,
 } = require('./comprovantes-contrato');
 
+const { withTransaction } = require('../db/postgresql/connection');
 const repositorio = require('../db/postgresql/comprovantes');
 
 /**
@@ -146,12 +154,155 @@ async function listarPendenciasDeComprovante(conexao, opcoes = {}) {
   return { itens: linhas.map(mapearItemDaFila), paginacao: { limite, offset, total }, estados };
 }
 
+// --- escrita (sempre dentro de transacao) -----------------------------------
+
+/**
+ * Registra ou altera o estado do comprovante de um movimento
+ * (M-04 / F-05 / F-11 / T-07) — trilha PostgreSQL da PG-2B2.
+ *
+ * Mesmo contrato publico da trilha SQLite, incluindo os codigos de erro e os
+ * tres resultados possiveis em `alteracao` ('registrado' | 'alterado' |
+ * 'sem_mudanca'). Todas as transicoes entre os quatro estados sao permitidas:
+ * nao ha maquina de estados aprovada no baseline, e inventar uma seria criar
+ * regra de negocio. Movimento INATIVADO tambem aceita evidencia e NAO e
+ * reativado por isso (M-09).
+ *
+ * NADA de financeiro e tocado: valor, data, tipo, origem, associado,
+ * identificacao, `ativo` e alocacoes permanecem exatamente como estavam. A
+ * linha do movimento e lida (e travada), nunca escrita.
+ *
+ * FRONTEIRA DA TRANSACAO (T-07). A transacao e aberta AQUI, no caso de uso, e
+ * todas as consultas usam o `client` que ela entrega — nenhuma volta ao `pool`,
+ * porque isso pegaria outra conexao, ficaria fora da transacao e sobreviveria ao
+ * ROLLBACK. Dentro dela, nesta ordem:
+ *
+ *   SELECT movimento ... FOR UPDATE   <- serializa writers do MESMO movimento
+ *   SELECT comprovante do movimento
+ *   INSERT ou UPDATE (quando ha mudanca real)
+ *   INSERT audit_log
+ *   COMMIT
+ *
+ * O lock da linha do movimento e o que impede que duas chamadas concorrentes
+ * leiam "nao ha comprovante" ao mesmo tempo e disputem o indice unico. O segundo
+ * writer espera, enxerga a linha ja criada e responde `sem_mudanca` — nenhuma
+ * violacao de unicidade vira comportamento normal. Escritas em movimentos
+ * DIFERENTES nao se bloqueiam: o lock e por linha, nao global.
+ *
+ * IDEMPOTENCIA: reenviar o mesmo `estado` E a mesma `observacao` (ja
+ * normalizados) e reconhecido como operacao SEM MUDANCA — nao ha UPDATE,
+ * `atualizado_em` nao se move e nenhuma segunda linha de auditoria e criada.
+ * Cada entrada de `audit_log` corresponde a uma mudanca real.
+ *
+ * @param {import('pg').Pool} pool pool PostgreSQL; a transacao e aberta aqui.
+ * @param {object} entrada
+ * @param {number} entrada.movimentoId
+ * @param {string} entrada.estado             'presente'|'ausente'|'pendente'|'nao_aplicavel'
+ * @param {string|null} [entrada.observacao]  contexto humano, OPCIONAL; nunca e
+ *        lida para deduzir estado. Vazio/espacos viram `null`.
+ * @param {string} [entrada.ator]             ator tecnico gravado na auditoria
+ * @returns {Promise<object>} a evidencia resultante, com `alteracao`.
+ * @throws {ComprovanteError} `id_invalido`, `estado_comprovante_invalido`,
+ *         `campo_invalido`, `movimento_inexistente`, `comprovante_nao_atualizado`.
+ */
+async function definirComprovanteDoMovimento(pool, entrada = {}) {
+  // Validacao ANTES da transacao, na mesma ordem da trilha SQLite: entrada
+  // invalida nao abre transacao, nao trava linha e nao escreve nada.
+  const movimentoId = exigirId(entrada.movimentoId, 'movimentoId');
+  const estado = exigirEstado(entrada.estado);
+  const observacao = textoOpcional(entrada.observacao, 'observacao');
+  const ator = exigirAtor(entrada.ator);
+
+  return withTransaction(pool, async (client) => {
+    // O movimento precisa existir: evidencia so existe sobre algo que existe.
+    // `FOR UPDATE` trava esta linha ate o fim da transacao.
+    const movimento = await repositorio.buscarMovimentoPorIdParaAtualizacao(client, movimentoId);
+    if (movimento === undefined) {
+      throw new ComprovanteError(`movimento ${movimentoId} nao existe`, 'movimento_inexistente');
+    }
+
+    const anteriorRow = await repositorio.buscarComprovantePorMovimento(client, movimentoId);
+
+    if (anteriorRow === undefined) {
+      const registro = mapearComprovante(
+        await repositorio.inserirComprovante(client, { movimentoId, estado, observacao })
+      );
+
+      await repositorio.registrarAuditoria(client, {
+        ator,
+        acao: ACAO_COMPROVANTE_REGISTRADO,
+        entidadeTipo: 'comprovante',
+        entidadeId: registro.id,
+        // Nao havia linha antes: o estado anterior e a AUSENCIA DE REGISTRO,
+        // declarada nos metadados como `sem_registro` — nunca como 'ausente'.
+        estadoAnterior: null,
+        estadoPosterior: registro,
+        metadados: {
+          origemRegistro: ORIGEM_REGISTRO,
+          movimentoId,
+          estadoAnterior: SEM_REGISTRO,
+          estadoNovo: estado,
+          observacao,
+        },
+      });
+
+      return { ...evidenciaRegistrada(movimentoId, registro), alteracao: ALTERACAO.registrado };
+    }
+
+    if (anteriorRow.estado === estado && anteriorRow.observacao === observacao) {
+      return {
+        ...evidenciaRegistrada(movimentoId, mapearComprovante(anteriorRow)),
+        alteracao: ALTERACAO.semMudanca,
+      };
+    }
+
+    const estadoAnterior = mapearComprovante(anteriorRow);
+
+    const atualizadaRow = await repositorio.atualizarComprovante(client, {
+      id: anteriorRow.id,
+      estado,
+      observacao,
+    });
+    if (atualizadaRow === undefined) {
+      // Defensivo: a linha foi lida sob o lock do movimento nesta transacao.
+      throw new ComprovanteError(
+        `comprovante do movimento ${movimentoId} nao foi atualizado`,
+        'comprovante_nao_atualizado'
+      );
+    }
+    const estadoPosterior = mapearComprovante(atualizadaRow);
+
+    await repositorio.registrarAuditoria(client, {
+      ator,
+      acao: ACAO_COMPROVANTE_ALTERADO,
+      entidadeTipo: 'comprovante',
+      entidadeId: anteriorRow.id,
+      estadoAnterior,
+      estadoPosterior,
+      metadados: {
+        origemRegistro: ORIGEM_REGISTRO,
+        movimentoId,
+        estadoAnterior: estadoAnterior.estado,
+        estadoNovo: estado,
+        observacao,
+        // Prova, na propria trilha, que a observacao nao decidiu nada.
+        criterio: CRITERIO_ESTADO_EXPLICITO,
+      },
+    });
+
+    return { ...evidenciaRegistrada(movimentoId, estadoPosterior), alteracao: ALTERACAO.alterado };
+  });
+}
+
 module.exports = {
   obterComprovanteDoMovimento,
   obterComprovantesDeMovimentos,
+  definirComprovanteDoMovimento,
   listarPendenciasDeComprovante,
   ComprovanteError,
   ESTADOS,
   ESTADOS_PENDENTES,
   SEM_REGISTRO,
+  ALTERACAO,
+  ACAO_COMPROVANTE_REGISTRADO,
+  ACAO_COMPROVANTE_ALTERADO,
 };

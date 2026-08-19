@@ -43,7 +43,6 @@
 //     inventado (C-07 segue TO CONFIRM).
 
 const { withTransaction } = require('../db/connection');
-const { ATOR_PADRAO } = require('./ledger');
 
 // O contrato independente de banco (vocabulario, validacao, forma da evidencia,
 // mapeamento publico) vive em `comprovantes-contrato.js` e e COMPARTILHADO com a
@@ -57,9 +56,15 @@ const {
   ESTADOS,
   ESTADOS_PENDENTES,
   SEM_REGISTRO,
+  ALTERACAO,
+  ORIGEM_REGISTRO,
+  ACAO_COMPROVANTE_REGISTRADO,
+  ACAO_COMPROVANTE_ALTERADO,
+  CRITERIO_ESTADO_EXPLICITO,
   ComprovanteError,
   exigirId,
   textoOpcional,
+  exigirAtor,
   exigirEstado,
   exigirEstadoPendente,
   exigirPaginacao,
@@ -69,25 +74,6 @@ const {
   evidenciaDaLinha,
   mapearItemDaFila,
 } = require('./comprovantes-contrato');
-
-/** Marca na auditoria que a decisao foi tomada por uma pessoa, nao derivada. */
-const ORIGEM_REGISTRO = 'manual';
-
-const ACAO_COMPROVANTE_REGISTRADO = 'comprovante.registrado';
-const ACAO_COMPROVANTE_ALTERADO = 'comprovante.alterado';
-
-/**
- * Resultado declarado de uma gravacao, para que o chamador saiba o que
- * ACONTECEU sem comparar objetos:
- *   registrado  -> o movimento nao tinha comprovante e passou a ter;
- *   alterado    -> estado e/ou observacao mudaram;
- *   sem_mudanca -> reenvio identico; nada foi gravado e nada foi auditado.
- */
-const ALTERACAO = Object.freeze({
-  registrado: 'registrado',
-  alterado: 'alterado',
-  semMudanca: 'sem_mudanca',
-});
 
 const COLUNAS_COMPROVANTE = `
          id, movimento_id, estado, observacao, referencia_externa, data,
@@ -181,10 +167,6 @@ function sqlListarPendencias(placeholders) {
    ORDER BY m.data ASC, m.id ASC
    LIMIT ? OFFSET ?
 `;
-}
-
-function exigirAtor(valor) {
-  return textoOpcional(valor, 'ator') ?? ATOR_PADRAO;
 }
 
 // --- auditoria (F-11) -------------------------------------------------------
@@ -431,7 +413,7 @@ function definirComprovanteDoMovimento(db, entrada = {}) {
         estadoNovo: estado,
         observacao,
         // Prova, na propria trilha, que a observacao nao decidiu nada.
-        criterio: 'estado informado explicitamente pelo operador',
+        criterio: CRITERIO_ESTADO_EXPLICITO,
       },
     });
 

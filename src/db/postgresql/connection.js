@@ -213,6 +213,15 @@ async function withTransaction(pool, fn) {
  *           -> fn(client) -> COMMIT -> release
  *   em erro: ROLLBACK -> release -> rethrow do erro ORIGINAL
  *
+ * O "em erro" vale para TUDO que acontece depois de um `BEGIN` bem sucedido —
+ * inclusive para o proprio `COMMIT` (PG-2C1R2). Um `COMMIT` que falha nao
+ * encerrou coisa alguma: a transacao pode seguir aberta neste client, e devolve-lo
+ * ao pool nesse estado entregaria ao proximo consumidor uma conexao com transacao
+ * pendente — um snapshot de leitura virando estado preso. Por isso o encerramento
+ * mora num UNICO caminho de erro, guardado pelo flag `transacaoAberta`, em vez de
+ * ficar espalhado em `try` aninhados: era exatamente o aninhamento que deixava o
+ * `COMMIT` do lado de fora do bloco responsavel pelo ROLLBACK.
+ *
  * POR QUE ISSO EXISTE. Uma resposta do sistema costuma sair de MAIS DE UMA
  * consulta — o movimento, suas alocacoes e o resumo agregado, ou o COUNT e a
  * pagina de uma fila. Em autocommit cada statement enxerga o banco no instante
@@ -253,24 +262,37 @@ async function withTransaction(pool, fn) {
 async function withReadSnapshot(pool, fn) {
   const client = await pool.connect();
 
+  // Estado explicito em vez de aninhamento: enquanto isto for `true`, existe uma
+  // transacao que ALGUEM precisa encerrar. O `BEGIN` que falha nunca o liga, e o
+  // `COMMIT` bem sucedido o desliga — as duas unicas situacoes em que um ROLLBACK
+  // seria indevido.
+  let transacaoAberta = false;
+
   try {
     await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    let resultado;
-    try {
-      resultado = await fn(client);
-    } catch (error) {
-      // Mesmo raciocinio do `withTransaction`: se o ROLLBACK tambem falhar, o
-      // erro ORIGINAL e o que interessa para o diagnostico.
+    transacaoAberta = true;
+
+    const resultado = await fn(client);
+
+    await client.query('COMMIT');
+    transacaoAberta = false;
+
+    return resultado;
+  } catch (error) {
+    if (transacaoAberta) {
+      // O ROLLBACK tambem pode falhar (conexao ja morta, transacao ja encerrada
+      // pelo servidor). Se falhar, o erro ORIGINAL — o de `fn` ou o do `COMMIT` —
+      // e o que interessa para o diagnostico, entao ele prevalece. Erro de
+      // cleanup mascarando a causa e como perder o rastro do problema real.
       try {
         await client.query('ROLLBACK');
       } catch {
         /* conexao perdida: o servidor ja desfez a transacao por conta propria */
       }
-      throw error;
     }
-    await client.query('COMMIT');
-    return resultado;
+    throw error;
   } finally {
+    // `release` num `finally` unico: um por chamada, em todos os caminhos.
     client.release();
   }
 }

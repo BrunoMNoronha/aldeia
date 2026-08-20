@@ -37,6 +37,9 @@ private/
 out/
 next-env.d.ts
 
+# Cache incremental do typecheck (`npm run typecheck`, ADR-007) — artefato local
+*.tsbuildinfo
+
 # Logs e temporários
 *.log
 npm-debug.log*

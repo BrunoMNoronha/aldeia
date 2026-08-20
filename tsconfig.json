@@ -1,0 +1,99 @@
+{
+  "//": [
+    "Fundacao TS-0 (ADR-007). Configuracao de TYPECHECK, nunca de emissao:",
+    "o Next.js compila `app/**` com o proprio pipeline e `src/**` continua",
+    "sendo carregado como CommonJS pelo Node (`node --test`, `npm run",
+    "start:express`, `scripts/*.js`). Este arquivo NAO introduz build step",
+    "novo e NAO migra o projeto de CommonJS para ESM.",
+    "",
+    "`target`/`lib` ES2022 acompanham o runtime MINIMO que o projeto anuncia",
+    "em `engines.node` (>=20.11.0) — nao o Node da maquina de quem",
+    "desenvolve, nem o do `.nvmrc` (22). O typechecker so pode considerar",
+    "disponivel API que o menor Node suportado realmente tem: com ES2024 ele",
+    "aceitaria `Promise.withResolvers` (Node 22+) e `Object.groupBy`",
+    "(Node 21+) como se existissem em Node 20.11, e o erro so apareceria em",
+    "producao. Ampliar isto e decisao explicita, acompanhada de mudanca em",
+    "`engines.node` — nunca efeito colateral de satisfazer um .d.ts alheio.",
+    "",
+    "`allowJs` + `checkJs: false` e o que torna a migracao incremental:",
+    "os .js existentes entram no programa como dependencias (o compilador",
+    "resolve seus modulos e infere os tipos que consegue) mas nao sao",
+    "reprovados por falta de anotacao. Cada arquivo convertido para .ts passa",
+    "a ser checado em modo strict a partir do momento da conversao. Quando",
+    "nao restar .js permanente, `allowJs` sai daqui — e esse e o criterio de",
+    "encerramento registrado no ADR-007.",
+    "",
+    "`strict: true` sem excecoes globais: supressao, se for inevitavel, e",
+    "local e justificada no ponto de uso. Tipagem estatica NAO substitui as",
+    "validacoes de runtime de BIGINT/NUMERIC/centavos/booleanos/DATE/",
+    "TIMESTAMPTZ nem a validacao de entrada externa (HTTP, planilha, env):",
+    "ver ADR-007 e T-06/T-07.",
+    "",
+    "`skipLibCheck: true` NAO e mecanismo para esconder erro do projeto: ele",
+    "suprime exatamente 6 erros, TODOS dentro de `node_modules/next/dist/`,",
+    "medidos com `npx tsc --noEmit --skipLibCheck false` (Next 16.3.1,",
+    "TypeScript 5.9.3):",
+    "  - 2x TS2304 `PromiseWithResolvers` em `client/components/segment-",
+    "    cache/cache.d.ts` e `server/app-render/work-unit-async-storage.",
+    "    external.d.ts`;",
+    "  - 4x TS2304/TS2552 `URLPatternInput` e `URLPatternOptions` em",
+    "    `server/web/spec-extension/url-pattern.d.ts`.",
+    "Nenhum erro em codigo deste repositorio. O pacote que os provoca e o",
+    "`next`, e a correcao nao esta ao nosso alcance. Reavaliar a cada",
+    "upgrade de Next ou de TypeScript rodando o comando acima: quando ele",
+    "sair limpo, esta linha deve ser removida.",
+    "",
+    "`jsx: react-jsx` e as entradas `.next/**/types` sao escritas pelo proprio",
+    "`next build` quando ele detecta TypeScript no projeto. Estao commitadas",
+    "no estado em que o Next as deixa para que o build nao produza diff.",
+    "",
+    "Este arquivo e gravado SEM BOM: o parser de tsconfig do Turbopack",
+    "reprova o build com `tsconfig is not parseable` se um BOM for inserido."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "incremental": true,
+    "moduleDetection": "force",
+    "forceConsistentCasingInFileNames": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "next.config.js",
+    "app/**/*",
+    "src/**/*",
+    "scripts/**/*",
+    "tests/**/*",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "data"
+  ]
+}

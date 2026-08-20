@@ -58,6 +58,9 @@ function rotular(sql) {
 function poolInstrumentado({ falhas = {} } = {}) {
   const log = [];
   let liberado = false;
+  // Guarda o ARGUMENTO do `release`, nao so o fato de ter ocorrido: e ele que
+  // diz ao pool se o client volta a circular ou e descartado.
+  let erroRecebidoNoRelease;
 
   const client = {
     query: async (sql) => {
@@ -77,6 +80,9 @@ function poolInstrumentado({ falhas = {} } = {}) {
         throw new Error('Release called on client which has already been released to the pool.');
       }
       liberado = true;
+      erroRecebidoNoRelease = erro;
+      // `release()` devolve o client ao pool; `release(err)` faz o `pg` DESCARTA-LO.
+      // Os dois eventos sao liberacoes validas, mas com consequencias opostas.
       log.push(erro === undefined ? 'release' : 'release(err)');
     },
   };
@@ -84,6 +90,7 @@ function poolInstrumentado({ falhas = {} } = {}) {
   return {
     log,
     client,
+    erroPassadoAoRelease: () => erroRecebidoNoRelease,
     pool: {
       connect: async () => {
         log.push('connect');
@@ -145,7 +152,9 @@ test('PG L2: erro em fn dispara ROLLBACK e devolve o erro original', async () =>
 
 test('PG L3: falha no ROLLBACK nao mascara o erro que abortou fn', async () => {
   const erroRollback = new Error('erro de cleanup — ROLLBACK indisponivel');
-  const { pool, log } = poolInstrumentado({ falhas: { ROLLBACK: erroRollback } });
+  const { pool, log, erroPassadoAoRelease } = poolInstrumentado({
+    falhas: { ROLLBACK: erroRollback },
+  });
   const erroA = new Error('erro A — regra de dominio recusou');
 
   const capturado = await capturarErro(
@@ -158,7 +167,12 @@ test('PG L3: falha no ROLLBACK nao mascara o erro que abortou fn', async () => {
   // O diagnostico util e a CAUSA, nao o sintoma do encerramento.
   assert.equal(capturado, erroA, 'o erro original prevalece sobre o erro do cleanup');
   assert.notEqual(capturado, erroRollback);
-  assert.deepEqual(log, ['connect', 'BEGIN', 'ROLLBACK', 'release']);
+
+  // Duas decisoes DIFERENTES no mesmo caminho: quem chamou recebe a causa, e o
+  // pool recebe o client marcado para descarte. Um ROLLBACK que falhou nao
+  // autoriza afirmar que a conexao voltou a um estado reutilizavel.
+  assert.deepEqual(log, ['connect', 'BEGIN', 'ROLLBACK', 'release(err)']);
+  assert.equal(erroPassadoAoRelease(), erroRollback, 'o pool recebe o motivo do descarte');
   assert.equal(log.filter((e) => e.startsWith('release')).length, 1, 'release exatamente uma vez');
 });
 
@@ -180,10 +194,10 @@ test('PG L4: falha no COMMIT tenta encerrar a transacao antes de devolver o clie
 
   assert.equal(capturado, erroB, 'o erro do COMMIT e o erro externo');
 
-  // O ponto da PG-2C1R2: um COMMIT que falha deixa a transacao em estado
-  // indefinido para ESTE client. Devolve-lo ao pool sem tentar encerrar a
-  // transacao arrisca entregar ao proximo consumidor uma conexao com transacao
-  // aberta — que e como um snapshot de leitura vira estado preso.
+  // O ponto da PG-2C1R2: com o COMMIT falhando, o helper nao pode assumir que
+  // este client esta em estado transacional reutilizavel — tenta o cleanup antes
+  // de devolve-lo. Aqui o ROLLBACK FUNCIONOU, entao o encerramento e confiavel e
+  // o client volta ao pool normalmente: `release` sem argumento.
   assert.deepEqual(log, ['connect', 'BEGIN', 'SELECT 1', 'COMMIT', 'ROLLBACK', 'release']);
 });
 
@@ -193,8 +207,8 @@ test('PG L4: falha no COMMIT tenta encerrar a transacao antes de devolver o clie
 
 test('PG L5: cleanup que falha depois do COMMIT nao substitui o erro do COMMIT', async () => {
   const erroB = new Error('erro B — COMMIT recusado');
-  const erroCleanup = new Error('erro de cleanup — conexao ja morta');
-  const { pool, log } = poolInstrumentado({
+  const erroCleanup = new Error('erro de cleanup — ROLLBACK recusado');
+  const { pool, log, erroPassadoAoRelease } = poolInstrumentado({
     falhas: { COMMIT: erroB, ROLLBACK: erroCleanup },
   });
 
@@ -205,7 +219,10 @@ test('PG L5: cleanup que falha depois do COMMIT nao substitui o erro do COMMIT',
 
   assert.equal(capturado, erroB, 'erro B continua sendo o erro principal');
   assert.notEqual(capturado, erroCleanup);
-  assert.deepEqual(log, ['connect', 'BEGIN', 'SELECT 1', 'COMMIT', 'ROLLBACK', 'release']);
+
+  // COMMIT falhou E o cleanup falhou: nada aqui autoriza reutilizar o client.
+  assert.deepEqual(log, ['connect', 'BEGIN', 'SELECT 1', 'COMMIT', 'ROLLBACK', 'release(err)']);
+  assert.equal(erroPassadoAoRelease(), erroCleanup, 'o pool recebe o motivo do descarte');
   assert.equal(log.filter((e) => e.startsWith('release')).length, 1, 'release exatamente uma vez');
 });
 
@@ -239,21 +256,35 @@ test('PG L6: falha no BEGIN nao emite ROLLBACK de transacao que nunca abriu', as
 test('PG L7: todos os caminhos liberam o client exatamente uma vez, sem cleanup duplicado', async () => {
   const erro = new Error('falha');
 
+  // `liberacao` e a FORMA esperada do release: `release` devolve o client ao
+  // pool, `release(err)` o descarta. Ambas contam como UMA liberacao.
   const cenarios = [
-    { nome: 'sucesso', falhas: {}, fn: async (c) => c.query('SELECT 1') },
-    { nome: 'fn falha', falhas: {}, fn: async () => { throw erro; } },
+    { nome: 'sucesso', falhas: {}, fn: async (c) => c.query('SELECT 1'), liberacao: 'release' },
+    { nome: 'fn falha', falhas: {}, fn: async () => { throw erro; }, liberacao: 'release' },
     {
       nome: 'fn falha e ROLLBACK falha',
       falhas: { ROLLBACK: new Error('cleanup falhou') },
       fn: async () => { throw erro; },
+      liberacao: 'release(err)',
     },
-    { nome: 'COMMIT falha', falhas: { COMMIT: erro }, fn: async (c) => c.query('SELECT 1') },
+    {
+      nome: 'COMMIT falha',
+      falhas: { COMMIT: erro },
+      fn: async (c) => c.query('SELECT 1'),
+      liberacao: 'release',
+    },
     {
       nome: 'COMMIT falha e cleanup falha',
       falhas: { COMMIT: erro, ROLLBACK: new Error('cleanup falhou') },
       fn: async (c) => c.query('SELECT 1'),
+      liberacao: 'release(err)',
     },
-    { nome: 'BEGIN falha', falhas: { BEGIN: erro }, fn: async (c) => c.query('SELECT 1') },
+    {
+      nome: 'BEGIN falha',
+      falhas: { BEGIN: erro },
+      fn: async (c) => c.query('SELECT 1'),
+      liberacao: 'release',
+    },
   ];
 
   for (const cenario of cenarios) {
@@ -269,6 +300,11 @@ test('PG L7: todos os caminhos liberam o client exatamente uma vez, sem cleanup 
     const connects = log.filter((e) => e === 'connect').length;
 
     assert.equal(releases, 1, `[${cenario.nome}] release exatamente uma vez — log: ${log.join(' > ')}`);
+    assert.equal(
+      log[log.length - 1],
+      cenario.liberacao,
+      `[${cenario.nome}] forma da liberacao — log: ${log.join(' > ')}`
+    );
     assert.ok(rollbacks <= 1, `[${cenario.nome}] no maximo um ROLLBACK — log: ${log.join(' > ')}`);
     assert.ok(commits <= 1, `[${cenario.nome}] no maximo um COMMIT — log: ${log.join(' > ')}`);
     assert.equal(connects, 1, `[${cenario.nome}] um unico client — log: ${log.join(' > ')}`);
@@ -279,6 +315,53 @@ test('PG L7: todos os caminhos liberam o client exatamente uma vez, sem cleanup 
       `[${cenario.nome}] release e o ultimo evento — log: ${log.join(' > ')}`
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// L9 — cleanup falho descarta o client AINDA aparentemente saudavel
+// ---------------------------------------------------------------------------
+//
+// Este caso e o oposto de L8, e a distincao e o ponto:
+//
+//   L8: a conexao MORREU. O driver percebe sozinho (`!client._queryable`) e
+//       descarta o client mesmo num `release()` comum. A decisao e do `pg`.
+//   L9: a conexao continua respondendo — so o ROLLBACK falhou. O driver nao ve
+//       problema algum e devolveria o client ao pool. Quem decide nao confiar
+//       nele somos NOS, via `release(erro)`.
+//
+// Sem L9, um `release()` comum passaria despercebido justamente no cenario em
+// que o estado transacional e duvidoso mas a conexao parece boa.
+
+test('PG L9: ROLLBACK que falha em client saudavel ainda assim marca a conexao para descarte', async () => {
+  const erroRollback = new Error('ROLLBACK recusado — estado transacional duvidoso');
+  const { pool, log, client, erroPassadoAoRelease } = poolInstrumentado({
+    falhas: { ROLLBACK: erroRollback },
+  });
+
+  // O client se declara utilizavel: e exatamente assim que o `pg-pool` avalia a
+  // saude da conexao (`_queryable`) antes de devolve-la ao pool.
+  client._queryable = true;
+
+  const erroOriginal = new Error('erro original — fn recusou');
+  const capturado = await capturarErro(
+    withReadSnapshot(pool, async () => {
+      throw erroOriginal;
+    }),
+    'o helper tinha de rejeitar'
+  );
+
+  // A causa continua chegando limpa a quem chamou...
+  assert.equal(capturado, erroOriginal, 'o erro original nao e substituido pelo do cleanup');
+
+  // ...e o client NAO volta a circular, mesmo parecendo saudavel.
+  assert.equal(client._queryable, true, 'a conexao continua se declarando utilizavel');
+  assert.equal(
+    log[log.length - 1],
+    'release(err)',
+    `um cleanup falho nao pode terminar em release comum — log: ${log.join(' > ')}`
+  );
+  assert.equal(erroPassadoAoRelease(), erroRollback, 'o motivo do descarte e o erro do ROLLBACK');
+  assert.equal(log.filter((e) => e.startsWith('release')).length, 1, 'release exatamente uma vez');
 });
 
 // ---------------------------------------------------------------------------

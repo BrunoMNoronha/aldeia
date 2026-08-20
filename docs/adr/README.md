@@ -14,6 +14,7 @@ histórico, e o que muda é o *status* e a nota de supersessão.
 | [ADR-004](ADR-004-deploy-producao-vps.md) | Produção em VPS com CI/CD automático a partir da `main` | **Aceito — parcialmente superseded** | 2026-08-18 | — | ADR-005 (rollback automático pós-migration, ciclo de vida da release, elegibilidade do SHA, gates de CI e de backup) | VPS + systemd + nginx + PostgreSQL 16 local; GitHub Actions dispara em push na `main`; release imutável por SHA; deploy live bloqueado por `PROD_DEPLOY_ENABLED=false` até o cutover PG-6. |
 | [ADR-005](ADR-005-hardening-deploy-producao.md) | Hardening e rollback seguro do deploy de produção | **Aceito — parcialmente superseded** | 2026-08-19 | ADR-004 (rollback automático pós-migration, `rm -rf` da release, validação do SHA por mera existência, ref livre no `workflow_dispatch`, contagem de skips informativa, backup pré-deploy opcional) | ADR-006 (momento do backup e alcance do fail-safe) | Sem rollback automático depois de migration; release imutável com staging e selo; deploy restrito a commits da `main`; CI reprova suíte pulada; backup pré-migration fail-closed. |
 | [ADR-006](ADR-006-janela-manutencao-migrations.md) | Janela de manutenção segura para migrations de produção | **Aceito** | 2026-08-19 | ADR-005 (backup com a aplicação possivelmente atendendo; fail-safe restrito ao bloco de health) | — | Build fora da janela; aplicação parada e quiescência comprovada antes de backup e migration; `MIGRATION_STARTED` como ponto sem retorno; fail-safe global no `trap EXIT`; retorno automático só antes da primeira migration. |
+| [ADR-007](ADR-007-typescript-incremental.md) | Adoção incremental de TypeScript | **Aceito** | 2026-08-20 | — | — | TypeScript como linguagem preferencial para código permanente novo, em migração incremental (`allowJs` temporário, `strict`, `noEmit`). Código transitório SQLite/Express permanece JavaScript até ser removido. Tipagem **não** substitui validação em runtime. `target`/`lib` seguem o mínimo de `engines.node`. Validação de PR (`ci.yml`) passa a ser o gate antes do merge. Sem migração CJS → ESM. |
 
 ## Supersessões, em detalhe
 
@@ -67,6 +68,7 @@ As duas migrações estão **em curso** e nenhuma terminou. O que está feito:
 |---|---|---|
 | ADR-002 (Next.js) | **NX-0** — fundação: `app/`, `next.config.js`, scripts | NX-1 — APIs viram Route Handlers |
 | ADR-003 (PostgreSQL) | **PG-0** governança, **PG-1** fundação paralela | PG-2 — converter os acessos a dados para `async` |
+| ADR-007 (TypeScript) | **TS-0** — fundação: `tsconfig.json` strict, `npm run typecheck`, validação de PR em `ci.yml` | TS-1 — converter os módulos permanentes puros |
 
 Enquanto isso: **Express serve `/api/*` e `/associados`**, e **SQLite é o banco
 do runtime**. Ver [`../architecture/overview.md`](../architecture/overview.md).

@@ -17,7 +17,8 @@
     "import:legacy": "node scripts/import-legacy.js",
     "legacy:associados": "node scripts/legacy-associados.js",
     "legacy:diagnostico": "node scripts/legacy-diagnostico.js",
-    "test": "node --test"
+    "test": "node --test",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "better-sqlite3": "^12.4.1",
@@ -30,5 +31,11 @@
   },
   "allowScripts": {
     "better-sqlite3": true
+  },
+  "devDependencies": {
+    "@types/node": "20.11.30",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "typescript": "5.9.3"
   }
 }

@@ -1,0 +1,91 @@
+# Validacao de Pull Request — TechLab+ Aldeia / ACASA (ADR-007, fase TS-0).
+#
+# Existe porque `deploy-production.yml` so dispara em push na `main`: ate agora
+# nenhuma verificacao automatica rodava ANTES do merge. Este workflow fecha essa
+# lacuna aplicando exatamente o mesmo contrato de validacao ja comprovado la —
+# typecheck, suite completa contra PostgreSQL efemero, gate fail-closed de
+# testes pulados e build.
+#
+# ESTE WORKFLOW NAO IMPLANTA NADA. Ele nao declara `environment:`, nao le
+# nenhum `secrets.*`, nao abre SSH, nao toca a VPS e nao referencia
+# `PROD_DEPLOY_ENABLED`. Deploy continua exclusivamente em
+# `deploy-production.yml`, com os gates do ADR-004/005/006 intactos. Adicionar
+# qualquer passo de publicacao aqui e violacao dessa separacao.
+name: ci
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# Um PR atualizado invalida a execucao anterior: aqui cancelar e seguro, porque
+# nada neste workflow toca infraestrutura. (Em producao e o oposto — la
+# `cancel-in-progress: false` protege migration/restart pela metade.)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validar revisao (typecheck + test + build)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aldeia_ci
+          POSTGRES_PASSWORD: aldeia_ci
+          POSTGRES_DB: aldeia_ci_teste
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aldeia_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Banco efemero exclusivo do CI. DATABASE_URL nunca e definida aqui: a
+      # suite PostgreSQL so liga com TEST_DATABASE_URL (fail-closed, ADR-003).
+      # Nenhuma credencial de producao existe neste workflow.
+      TEST_DATABASE_URL: postgresql://aldeia_ci:aldeia_ci@127.0.0.1:5432/aldeia_ci_teste
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Typecheck (TypeScript strict)
+        # ADR-007 (TS-0). Roda antes da suite porque e barato e nao depende do
+        # PostgreSQL efemero. NAO substitui teste nenhum: as validacoes de
+        # runtime de BIGINT/NUMERIC/centavos e os contratos financeiros
+        # continuam provados pela suite abaixo.
+        run: npm run typecheck
+      - name: Testes (SQLite + PostgreSQL efemero)
+        shell: bash
+        run: |
+          # pipefail e obrigatorio: sem ele o `tee` mascara a falha da suite.
+          set -o pipefail
+          npm test 2>&1 | tee test-output.log
+      - name: Gate da suite (nenhum teste pulado)
+        shell: bash
+        run: |
+          {
+            echo '## Resumo dos testes'
+            echo '```'
+            grep -E '^# (tests|suites|pass|fail|cancelled|skipped|todo)' test-output.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          skipped="$(grep -oE '^# skipped [0-9]+' test-output.log | grep -oE '[0-9]+$' || true)"
+          # Fail-closed: nao conseguir ler a contagem conta como reprovacao.
+          if [[ -z "$skipped" ]]; then
+            echo "::error title=Resumo da suite ilegivel::nao foi possivel ler a contagem de testes pulados em test-output.log"
+            exit 1
+          fi
+          echo "testes pulados: $skipped"
+          if [[ "$skipped" -ne 0 ]]; then
+            echo "::error title=Suite incompleta::$skipped teste(s) pulado(s). Com TEST_DATABASE_URL configurada a suite PostgreSQL (ADR-003) tem de rodar por inteiro; uma suite pulada nao e um CI verde. Investigar o PostgreSQL efemero do CI — nunca apontar o CI para DATABASE_URL de producao."
+            exit 1
+          fi
+      - run: npm run build

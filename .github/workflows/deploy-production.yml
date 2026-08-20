@@ -55,6 +55,12 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - name: Typecheck (TypeScript strict)
+        # ADR-007 (TS-0): typecheck estrito antes da suite. Roda cedo porque e
+        # barato e nao depende do PostgreSQL efemero. NAO substitui teste
+        # nenhum: as validacoes de runtime de BIGINT/NUMERIC/centavos e os
+        # contratos financeiros continuam provados pela suite abaixo.
+        run: npm run typecheck
       - name: Testes (SQLite + PostgreSQL efemero)
         shell: bash
         run: |

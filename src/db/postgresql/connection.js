@@ -205,6 +205,76 @@ async function withTransaction(pool, fn) {
   }
 }
 
+/**
+ * Executa `fn` dentro de uma transacao de LEITURA com snapshot consistente.
+ *
+ * Contrato:
+ *   connect -> BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY
+ *           -> fn(client) -> COMMIT -> release
+ *   em erro: ROLLBACK -> release -> rethrow do erro ORIGINAL
+ *
+ * POR QUE ISSO EXISTE. Uma resposta do sistema costuma sair de MAIS DE UMA
+ * consulta — o movimento, suas alocacoes e o resumo agregado, ou o COUNT e a
+ * pagina de uma fila. Em autocommit cada statement enxerga o banco no instante
+ * em que roda, entao um commit alheio entre duas delas produz uma resposta
+ * internamente incoerente: a lista com uma alocacao e o resumo dizendo que ha
+ * duas. Nao e dado errado no banco — e uma fotografia costurada de dois
+ * momentos, que quem le nao tem como perceber.
+ *
+ * `REPEATABLE READ` fixa UM snapshot no primeiro comando da transacao; todas as
+ * consultas seguintes leem esse mesmo estado, mesmo que outras transacoes
+ * commitem no meio. A resposta passa a ser sempre um retrato de um instante.
+ *
+ * `READ ONLY` e a outra metade: o proprio PostgreSQL recusa INSERT/UPDATE/DELETE
+ * aqui (SQLSTATE 25006). Leitura que grava deixa de ser possivel por
+ * construcao, e nao por disciplina de quem escreve o codigo.
+ *
+ * O que este helper NAO faz, de proposito:
+ *   * NAO adquire lock de linha (`FOR UPDATE`, `FOR NO KEY UPDATE`) nem lock de
+ *     tabela. Leitura nao serializa quem escreve: writers concorrentes seguem
+ *     em frente e apenas nao aparecem neste snapshot;
+ *   * NAO substitui `withTransaction`, que continua sendo a transacao de
+ *     ESCRITA financeira (T-07) — misturar as duas tornaria ambiguo o que uma
+ *     transacao significa em cada ponto do codigo;
+ *   * NAO aninha. Chamar um snapshot dentro de outro emitiria um `BEGIN` dentro
+ *     de transacao aberta, que o PostgreSQL ignora com aviso — e o segundo bloco
+ *     terminaria commitando o primeiro. Nesta fase nenhum caso de uso precisa
+ *     disso; quem compoe leituras compoe DENTRO do mesmo bloco.
+ *
+ * `fn` recebe o client da transacao e DEVE usar exatamente esse client: voltar a
+ * chamar `pool.query()` la dentro pega outra conexao, com outro snapshot, e
+ * traz de volta exatamente a incoerencia que este helper elimina.
+ *
+ * @template T
+ * @param {import('pg').Pool} pool
+ * @param {(client: import('pg').PoolClient) => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+async function withReadSnapshot(pool, fn) {
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    let resultado;
+    try {
+      resultado = await fn(client);
+    } catch (error) {
+      // Mesmo raciocinio do `withTransaction`: se o ROLLBACK tambem falhar, o
+      // erro ORIGINAL e o que interessa para o diagnostico.
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        /* conexao perdida: o servidor ja desfez a transacao por conta propria */
+      }
+      throw error;
+    }
+    await client.query('COMMIT');
+    return resultado;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   createPool,
   getPool,
@@ -212,6 +282,7 @@ module.exports = {
   testarConexao,
   withClient,
   withTransaction,
+  withReadSnapshot,
   parseInt8Seguro,
   POOL_DEFAULTS,
   PG_TYPE_INT8,

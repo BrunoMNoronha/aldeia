@@ -1261,8 +1261,14 @@ function obterMovimento(db, movimentoId) {
  *
  * `total` conta os elegiveis ANTES do LIMIT/OFFSET; pedir uma pagina alem do fim
  * devolve `itens` vazio sem alterar `total`. As duas consultas (COUNT e SELECT)
- * rodam em sequencia na mesma conexao sincrona, sem transacao de escrita: uma
- * leitura nao precisa — e nao deve — adquirir o lock de gravacao.
+ * rodam em sequencia na mesma conexao SINCRONA, sem transacao de escrita: uma
+ * leitura nao precisa — e nao deve — adquirir o lock de gravacao, e no SQLite
+ * nenhum writer consegue commitar entre elas.
+ *
+ * Isso vale AQUI por causa do SQLite. A trilha PostgreSQL nao herda a garantia:
+ * la as duas consultas poderiam observar commits diferentes, e por isso
+ * `ledger-postgresql.js` roda o par dentro de uma transacao READ ONLY /
+ * REPEATABLE READ (snapshot consistente, ainda sem lock de escrita).
  *
  * @param {import('better-sqlite3').Database} db
  * @param {object} [opcoes]

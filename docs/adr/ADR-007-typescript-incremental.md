@@ -60,7 +60,38 @@ para TypeScript **não está concluída** e não termina nesta fase.
   serviços de contrato, helpers), depois transporte Next.js, por último o que
   depender de infraestrutura de execução TypeScript ainda inexistente.
 
-### 3.1 `target`/`lib` acompanham o **menor** Node suportado
+### 3.1 O contrato de compatibilidade tem **duas** superfícies
+
+A versão de Node que o typechecker considera disponível não é definida por um
+único ajuste. São **duas superfícies independentes**, e ambas têm de acompanhar
+o **menor** Node suportado em `engines.node`:
+
+| Superfície | O que anuncia | Valor atual |
+|---|---|---|
+| `compilerOptions.target` / `lib` | APIs da **linguagem** e globais do ECMAScript (`Promise.withResolvers`, `Object.groupBy`, `Array.prototype.toSorted`…) | `ES2022` |
+| versão de **`@types/node`** | APIs da **plataforma Node** (módulos `node:*`, `fs`, `process`, `Buffer`…) | `20.11.30` |
+
+Alinhar só uma delas **não** produz compatibilidade. É um erro fácil de cometer
+e foi cometido na primeira versão desta fundação: com `target`/`lib` já em
+`ES2022`, mas `@types/node@24`, o compilador aceitava sem reclamar
+
+```ts
+import { DatabaseSync } from 'node:sqlite';
+```
+
+— módulo que **só existe a partir do Node 22.5** e que estouraria em qualquer
+Node 20.11, o mínimo que o projeto declara suportar. `target`/`lib` não têm
+como barrar isso: `node:sqlite` não é API de linguagem.
+
+Com `@types/node@20.11.30` o mesmo trecho é rejeitado na compilação
+(`TS2307: Cannot find module 'node:sqlite'`), que é o comportamento correto.
+
+**Escolha da versão:** a linha `20.11.x`, e não o `@types/node@20` mais
+recente. Releases posteriores da própria linha 20 (20.12, 20.15…) incorporam
+tipos de APIs introduzidas **depois** do 20.11, o que reabriria exatamente a
+mesma brecha em escala menor. `--save-exact` mantém a versão fixa.
+
+### 3.2 `target`/`lib` acompanham o **menor** Node suportado
 
 `target` e `lib` são `ES2022`, alinhados ao mínimo declarado em
 `engines.node` (`>=20.11.0`) — **não** ao `.nvmrc` (22) nem ao Node da máquina
@@ -73,9 +104,10 @@ aceitaria `Promise.withResolvers` (só existe a partir do Node 22) e
 apareceria apenas em produção, sem nenhum aviso estático. Um typechecker que
 autoriza API inexistente no runtime alvo é pior que nenhum.
 
-**Regra:** ampliar `target`/`lib` é decisão explícita, acompanhada da mudança
-correspondente em `engines.node`. Nunca efeito colateral de satisfazer o
-`.d.ts` de uma dependência.
+**Regra:** ampliar `target`/`lib` **ou** a versão de `@types/node` é decisão
+explícita, acompanhada da mudança correspondente em `engines.node`. Nunca
+efeito colateral de satisfazer o `.d.ts` de uma dependência, e nunca resultado
+de um `npm install` que resolveu a última versão disponível.
 
 Registro do que foi medido na fase TS-0R: a primeira versão de TS-0 havia
 subido para `ES2024` justamente para calar dois erros de `PromiseWithResolvers`
@@ -180,7 +212,8 @@ A migração TypeScript termina quando, cumulativamente:
    Pull Request (§7.1), em Linux, com a suíte PostgreSQL completa e
    `skipped = 0`;
 4. nenhuma supressão ampla tiver sido introduzida para chegar lá;
-5. `target`/`lib` continuarem coerentes com `engines.node` (§3.1).
+5. **as duas** superfícies de compatibilidade — `target`/`lib` e a versão de
+   `@types/node` — continuarem coerentes com `engines.node` (§3.1 e §3.2).
 
 A remoção de `allowJs` é o marco objetivo de encerramento.
 
@@ -236,7 +269,7 @@ Resultado com Next `16.3.1` e TypeScript `5.9.3` — **6 erros, todos dentro de
 
 A alternativa descartada foi ampliar `lib` para `ES2024`, que calaria 2 dos 6
 erros ao custo de o typechecker passar a autorizar APIs inexistentes no Node
-mínimo suportado — ver §3.1.
+mínimo suportado — ver §3.2.
 
 **Explicitamente não decidido aqui:** migração de CommonJS para ESM. O
 `tsconfig.json` de TS-0 é de typecheck (`noEmit`) e **não obriga** essa

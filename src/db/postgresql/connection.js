@@ -213,6 +213,20 @@ async function withTransaction(pool, fn) {
  *           -> fn(client) -> COMMIT -> release
  *   em erro: ROLLBACK -> release -> rethrow do erro ORIGINAL
  *
+ * O "em erro" vale para TUDO que acontece depois de um `BEGIN` bem sucedido —
+ * inclusive para o proprio `COMMIT` (PG-2C1R2). Se o `COMMIT` falha, o helper NAO
+ * pode assumir que o client esta em estado transacional reutilizavel: a falha e
+ * observada deste lado, e o que o servidor efetivou nao e inequivoco daqui. Por
+ * isso ele tenta o cleanup antes de devolver o client ao pool, num UNICO caminho
+ * de erro guardado por `transacaoAberta` — era o aninhamento anterior que deixava
+ * o `COMMIT` fora do bloco responsavel pelo ROLLBACK.
+ *
+ * Se o proprio ROLLBACK falhar, duas informacoes DISTINTAS sao preservadas: o
+ * CHAMADOR recebe o erro original (de `fn` ou do `COMMIT`), e o POOL recebe o
+ * client marcado para descarte via `release(erro)`. Cleanup que falhou nao
+ * autoriza reutilizar a conexao — e tambem nao justifica trocar a causa de que o
+ * diagnostico depende.
+ *
  * POR QUE ISSO EXISTE. Uma resposta do sistema costuma sair de MAIS DE UMA
  * consulta — o movimento, suas alocacoes e o resumo agregado, ou o COUNT e a
  * pagina de uma fila. Em autocommit cada statement enxerga o banco no instante
@@ -253,25 +267,50 @@ async function withTransaction(pool, fn) {
 async function withReadSnapshot(pool, fn) {
   const client = await pool.connect();
 
+  // Estado explicito em vez de aninhamento: enquanto isto for `true`, existe uma
+  // transacao que ALGUEM precisa encerrar. O `BEGIN` que falha nunca o liga, e o
+  // `COMMIT` bem sucedido o desliga — as duas unicas situacoes em que um ROLLBACK
+  // seria indevido.
+  let transacaoAberta = false;
+  // Motivo para NAO devolver este client ao pool. Continua `null` enquanto o
+  // encerramento for confiavel.
+  let erroDeCleanup = null;
+
   try {
     await client.query('BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    let resultado;
-    try {
-      resultado = await fn(client);
-    } catch (error) {
-      // Mesmo raciocinio do `withTransaction`: se o ROLLBACK tambem falhar, o
-      // erro ORIGINAL e o que interessa para o diagnostico.
+    transacaoAberta = true;
+
+    const resultado = await fn(client);
+
+    await client.query('COMMIT');
+    transacaoAberta = false;
+
+    return resultado;
+  } catch (error) {
+    if (transacaoAberta) {
       try {
         await client.query('ROLLBACK');
-      } catch {
-        /* conexao perdida: o servidor ja desfez a transacao por conta propria */
+        transacaoAberta = false;
+      } catch (erroRollback) {
+        // O erro do cleanup NAO substitui a causa: quem chamou continua
+        // recebendo o erro de `fn` ou do `COMMIT`. Ele decide outra coisa — que
+        // este client nao e mais confiavel. Normalizado para `Error` porque e
+        // a verdade do `release` que importa: um valor falsy passaria batido
+        // pela checagem do pool e o client voltaria a circular.
+        erroDeCleanup =
+          erroRollback instanceof Error ? erroRollback : new Error(String(erroRollback));
       }
-      throw error;
     }
-    await client.query('COMMIT');
-    return resultado;
+    throw error;
   } finally {
-    client.release();
+    // `release` num `finally` unico: um por chamada, em todos os caminhos.
+    //
+    // Com argumento, o `pg` REMOVE o client do pool em vez de devolve-lo
+    // (`pg-pool`: "include an error to remove it from the pool"; o `_release`
+    // cai em `_remove` assim que `err` e truthy). E o mecanismo suportado para
+    // descartar uma conexao que AINDA parece saudavel — diferente do client cuja
+    // conexao morreu, que o proprio driver ja descarta por `!_queryable`.
+    client.release(erroDeCleanup ?? undefined);
   }
 }
 

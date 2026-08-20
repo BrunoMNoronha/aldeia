@@ -35,6 +35,22 @@
 //
 // A conexao chega pronta de fora e apenas ATRAVESSA este modulo rumo a
 // persistencia, do mesmo jeito que o `db` do SQLite atravessa `ledger.js`.
+//
+// ---------------------------------------------------------------------------
+// SNAPSHOT DAS LEITURAS COMPOSTAS
+// ---------------------------------------------------------------------------
+// Quase toda resposta daqui sai de MAIS DE UMA consulta: o movimento, suas
+// alocacoes e o resumo; o COUNT e a pagina da fila; os movimentos e o lote de
+// alocacoes do extrato. Em autocommit cada consulta enxerga o banco no instante
+// em que roda, e um commit alheio no meio produz uma resposta costurada de dois
+// momentos — a lista com UMA alocacao e o resumo dizendo DUAS. O SQLite nao tem
+// esse problema por ser sincrono e de escrita serializada; o PostgreSQL tem.
+//
+// Por isso cada caso de uso composto roda inteiro dentro de `withReadSnapshot`:
+// REPEATABLE READ fixa um snapshot e READ ONLY faz o proprio banco recusar
+// escrita. NENHUMA destas leituras adquire lock de linha — writers concorrentes
+// seguem em frente e apenas nao aparecem no snapshot ja aberto; quem quiser
+// ve-los faz uma chamada nova.
 
 const {
   LedgerError,
@@ -48,14 +64,15 @@ const {
   montarResumo,
 } = require('./ledger-contrato');
 
+const { withReadSnapshot } = require('../db/postgresql/connection');
 const repositorio = require('../db/postgresql/ledger');
 
 /**
  * Resumo do movimento a partir do ledger (F-08), com a linha do movimento ja
  * lida. A aritmetica vive no contrato — aqui so buscamos os numeros.
  */
-async function resumoDeMovimento(conexao, movimentoRow) {
-  const { quantidade, soma } = await repositorio.resumirAlocacoesAtivas(conexao, movimentoRow.id);
+async function resumoDeMovimento(client, movimentoRow) {
+  const { quantidade, soma } = await repositorio.resumirAlocacoesAtivas(client, movimentoRow.id);
   return montarResumo({
     movimentoId: movimentoRow.id,
     totalCentavos: movimentoRow.valor_centavos,
@@ -78,7 +95,17 @@ async function resumoDeMovimento(conexao, movimentoRow) {
  */
 async function listarAlocacoesDoMovimento(conexao, movimentoId, { incluirInativas = false } = {}) {
   const id = exigirId(movimentoId, 'movimentoId');
-  const linhas = await repositorio.buscarAlocacoesDoMovimento(conexao, id, { incluirInativas });
+  // UMA consulta: um statement ja e atomico e enxerga um unico estado. Abrir
+  // transacao aqui so acrescentaria duas idas ao servidor (BEGIN/COMMIT) sem
+  // comprar consistencia nenhuma.
+  return lerAlocacoes(conexao, id, { incluirInativas });
+}
+
+/** Nucleo compartilhado: le e mapeia, sem revalidar nem abrir transacao. */
+async function lerAlocacoes(client, movimentoId, { incluirInativas }) {
+  const linhas = await repositorio.buscarAlocacoesDoMovimento(client, movimentoId, {
+    incluirInativas,
+  });
   return linhas.map(mapearAlocacao);
 }
 
@@ -93,16 +120,23 @@ async function listarAlocacoesDoMovimento(conexao, movimentoId, { incluirInativa
  * @returns {Promise<object|null>} `null` quando o movimento nao existe.
  * @throws {LedgerError} `id_invalido`.
  */
-async function obterMovimento(conexao, movimentoId) {
+async function obterMovimento(pool, movimentoId) {
+  // Validacao antes de pegar conexao: entrada invalida nao abre transacao.
   const id = exigirId(movimentoId, 'movimentoId');
-  const movimentoRow = await repositorio.buscarMovimentoPorId(conexao, id);
-  if (movimentoRow === undefined) return null;
 
-  return {
-    ...mapearMovimento(movimentoRow),
-    alocacoes: await listarAlocacoesDoMovimento(conexao, id),
-    resumo: await resumoDeMovimento(conexao, movimentoRow),
-  };
+  return withReadSnapshot(pool, async (client) => {
+    const movimentoRow = await repositorio.buscarMovimentoPorId(client, id);
+    if (movimentoRow === undefined) return null;
+
+    // As tres leituras compartilham o snapshot, entao `resumo` descreve
+    // exatamente as `alocacoes` devolvidas ao lado dele — nunca um conjunto
+    // maior ou menor, commitado entre uma consulta e outra.
+    return {
+      ...mapearMovimento(movimentoRow),
+      alocacoes: await lerAlocacoes(client, id, { incluirInativas: false }),
+      resumo: await resumoDeMovimento(client, movimentoRow),
+    };
+  });
 }
 
 /**
@@ -118,8 +152,10 @@ async function obterMovimento(conexao, movimentoId) {
  * proprio movimento. Nao ha busca por associado nem inferencia a partir do valor.
  *
  * `total` conta os elegiveis ANTES do LIMIT/OFFSET; pedir uma pagina alem do fim
- * devolve `itens` vazio sem alterar `total`. As duas consultas rodam fora de
- * transacao: leitura nao precisa — e nao deve — adquirir lock de gravacao.
+ * devolve `itens` vazio sem alterar `total`. As duas consultas rodam no MESMO
+ * snapshot: sem ele, `total` poderia vir de um estado e `itens` de outro, e a
+ * paginacao mentiria sobre o universo que diz estar recortando. Nenhum lock de
+ * gravacao e adquirido.
  *
  * @param {object} conexao
  * @param {object} [opcoes]
@@ -127,13 +163,15 @@ async function obterMovimento(conexao, movimentoId) {
  * @param {number} [opcoes.offset] >= 0 (padrao 0)
  * @returns {Promise<{itens: object[], paginacao: {limite: number, offset: number, total: number}}>}
  */
-async function listarMovimentosNaoIdentificados(conexao, opcoes = {}) {
+async function listarMovimentosNaoIdentificados(pool, opcoes = {}) {
   const { limite, offset } = exigirPaginacao(opcoes);
 
-  const total = await repositorio.contarNaoIdentificados(conexao);
-  const linhas = await repositorio.buscarNaoIdentificados(conexao, { limite, offset });
+  return withReadSnapshot(pool, async (client) => {
+    const total = await repositorio.contarNaoIdentificados(client);
+    const linhas = await repositorio.buscarNaoIdentificados(client, { limite, offset });
 
-  return { itens: linhas.map(mapearMovimento), paginacao: { limite, offset, total } };
+    return { itens: linhas.map(mapearMovimento), paginacao: { limite, offset, total } };
+  });
 }
 
 /**
@@ -178,7 +216,9 @@ async function agruparAlocacoesComCompetencia(conexao, movimentoIds) {
  * segue TO CONFIRM e nada aqui produz situacao financeira (M-06).
  *
  * Duas consultas no total, independentemente da quantidade de movimentos: uma
- * para os movimentos e uma em lote para alocacoes + competencia. Nada de N+1.
+ * para os movimentos e uma em lote para alocacoes + competencia. Nada de N+1 —
+ * e as duas no MESMO snapshot, para que uma alocacao commitada no intervalo nao
+ * apareca sob um movimento lido antes de ela existir.
  *
  * Valores permanecem em CENTAVOS INTEIROS (T-06); formatacao e assunto da view.
  *
@@ -187,23 +227,25 @@ async function agruparAlocacoesComCompetencia(conexao, movimentoIds) {
  * @returns {Promise<object[]>} vazio quando o associado nao tem movimento vinculado.
  * @throws {LedgerError} `id_invalido` quando `associadoId` nao e inteiro positivo.
  */
-async function listarMovimentosDoAssociado(conexao, associadoId) {
+async function listarMovimentosDoAssociado(pool, associadoId) {
   const id = exigirId(associadoId, 'associadoId');
 
-  const linhas = await repositorio.buscarMovimentosDoAssociado(conexao, id);
-  if (linhas.length === 0) return [];
+  return withReadSnapshot(pool, async (client) => {
+    const linhas = await repositorio.buscarMovimentosDoAssociado(client, id);
+    if (linhas.length === 0) return [];
 
-  const alocacoes = await agruparAlocacoesComCompetencia(
-    conexao,
-    linhas.map((row) => row.id)
-  );
+    const alocacoes = await agruparAlocacoesComCompetencia(
+      client,
+      linhas.map((row) => row.id)
+    );
 
-  // `...ComInativacao`: o extrato precisa PROVAR quando e por que um lancamento
-  // deixou de valer, sem alterar o contrato base consumido pelas rotas JSON.
-  return linhas.map((row) => ({
-    ...mapearMovimentoComInativacao(row),
-    alocacoes: alocacoes.get(row.id) ?? [],
-  }));
+    // `...ComInativacao`: o extrato precisa PROVAR quando e por que um lancamento
+    // deixou de valer, sem alterar o contrato base consumido pelas rotas JSON.
+    return linhas.map((row) => ({
+      ...mapearMovimentoComInativacao(row),
+      alocacoes: alocacoes.get(row.id) ?? [],
+    }));
+  });
 }
 
 /**
@@ -215,13 +257,19 @@ async function listarMovimentosDoAssociado(conexao, associadoId) {
  *
  * @throws {LedgerError} `id_invalido`, `movimento_inexistente`.
  */
-async function calcularResumoDoMovimento(conexao, movimentoId) {
+async function calcularResumoDoMovimento(pool, movimentoId) {
   const id = exigirId(movimentoId, 'movimentoId');
-  const movimentoRow = await repositorio.buscarMovimentoPorId(conexao, id);
-  if (movimentoRow === undefined) {
-    throw new LedgerError(`movimento ${id} nao existe`, 'movimento_inexistente');
-  }
-  return resumoDeMovimento(conexao, movimentoRow);
+
+  return withReadSnapshot(pool, async (client) => {
+    const movimentoRow = await repositorio.buscarMovimentoPorId(client, id);
+    if (movimentoRow === undefined) {
+      throw new LedgerError(`movimento ${id} nao existe`, 'movimento_inexistente');
+    }
+    // `totalCentavos` sai desta linha e o alocado sai da agregacao: as duas tem
+    // de vir do mesmo estado, ou o "nao alocado" seria uma subtracao entre dois
+    // instantes diferentes.
+    return resumoDeMovimento(client, movimentoRow);
+  });
 }
 
 module.exports = {

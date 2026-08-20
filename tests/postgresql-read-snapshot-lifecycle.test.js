@@ -372,53 +372,81 @@ test(
   'PG L8: conexao que morre durante o COMMIT nao e reaproveitada pelo pool',
   { skip },
   async (t) => {
-    const { url } = await schemaIsolado(t);
+    const { url, schema } = await schemaIsolado(t);
 
     // Pool proprio com max: 1. Com uma unica conexao permitida, se o client
     // quebrado voltasse a circular a leitura seguinte falharia — nao ha outra
     // conexao para mascarar o problema.
-    const pool = createPool({ connectionString: url, max: 1 });
-    t.after(async () => {
+    //
+    // `options` NAO e opcional aqui: o pool do `schemaIsolado` nasce com
+    // `-c search_path=<schema>`, e um pool proprio criado so com
+    // `connectionString` herdaria o `search_path` padrao (`"$user", public`).
+    // O schema dedicado seria criado e derrubado, mas o teste rodaria FORA dele.
+    const pool = createPool({
+      connectionString: url,
+      max: 1,
+      options: `-c search_path=${schema}`,
+    });
+
+    // Lifecycle explicito em vez de ordem implicita de callbacks: o pool proprio
+    // do L8 fecha ao fim do corpo do teste — antes, portanto, do `t.after` do
+    // `schemaIsolado` derrubar o schema. O `finally` cobre tambem o caso de uma
+    // assertion falhar no meio, para que nenhuma conexao fique aberta.
+    // A criacao e a remocao do schema continuam sendo responsabilidade do helper.
+    try {
+      let schemaObservado;
+
+      const capturado = await capturarErro(
+        withReadSnapshot(pool, async (client) => {
+          // Prova de isolamento na PROPRIA conexao que este teste usa — nao em
+          // outro pool. Se o `options` sumir, e esta leitura que denuncia.
+          const { rows } = await client.query('SELECT current_schema() AS schema');
+          schemaObservado = rows[0].schema;
+
+          // Enquanto um client esta EMPRESTADO, o `pg-pool` remove o proprio
+          // listener de erro (`connect()` faz `removeListener('error', ...)`) e so
+          // o reinstala no `release`. Nessa janela, um `error` sem ouvinte vira
+          // excecao nao capturada do processo — comportamento do `pg`, anterior a
+          // esta tarefa e comum a `withClient`/`withTransaction`. O teste assume
+          // esse contrato explicitamente em vez de escondê-lo.
+          client.on('error', () => {
+            /* a falha real chega pela rejeicao da query; aqui so evita o throw */
+          });
+
+          // Mata o SOCKET deste client — nao o servidor, nao o container, nao a
+          // rede. O `COMMIT` que o helper emite a seguir falha por conexao morta,
+          // de forma imediata e deterministica.
+          client.connection.stream.destroy();
+          return 'nunca entregue';
+        }),
+        'o COMMIT sobre conexao morta tinha de falhar'
+      );
+
+      assert.equal(
+        schemaObservado,
+        schema,
+        'a conexao do L8 precisa viver no schema dedicado do teste, nunca em public'
+      );
+
+      assert.ok(capturado instanceof Error, 'a falha chega como Error');
+
+      // EVIDENCIA, nao suposicao: no `pg` 8.23.0 o `_release` do `pg-pool` descarta
+      // o client quando `!client._queryable || client._ending`, que e exatamente o
+      // estado de um client cuja conexao caiu. Ou seja, `release()` SEM argumento
+      // ja e suficiente para impedir o reuso de uma conexao quebrada — passar
+      // `release(err)` seria redundante nesta versao.
+      assert.equal(pool.idleCount, 0, 'o client quebrado nao ficou ocioso no pool');
+
+      // E o pool continua utilizavel: abre uma conexao nova sob demanda — e a
+      // conexao NOVA tambem nasce dentro do schema dedicado.
+      const vivo = await withReadSnapshot(pool, async (client) => {
+        const { rows } = await client.query('SELECT 1 AS ok, current_schema() AS schema');
+        return rows[0];
+      });
+      assert.equal(vivo.ok, 1, 'o pool se recupera abrindo uma conexao nova');
+      assert.equal(vivo.schema, schema, 'a conexao nova tambem respeita o schema dedicado');
+    } finally {
       if (pool.ended !== true) await pool.end();
-    });
-
-    const capturado = await capturarErro(
-      withReadSnapshot(pool, async (client) => {
-        await client.query('SELECT 1');
-
-        // Enquanto um client esta EMPRESTADO, o `pg-pool` remove o proprio
-        // listener de erro (`connect()` faz `removeListener('error', ...)`) e so
-        // o reinstala no `release`. Nessa janela, um `error` sem ouvinte vira
-        // excecao nao capturada do processo — comportamento do `pg`, anterior a
-        // esta tarefa e comum a `withClient`/`withTransaction`. O teste assume
-        // esse contrato explicitamente em vez de escondê-lo.
-        client.on('error', () => {
-          /* a falha real chega pela rejeicao da query; aqui so evita o throw */
-        });
-
-        // Mata o SOCKET deste client — nao o servidor, nao o container, nao a
-        // rede. O `COMMIT` que o helper emite a seguir falha por conexao morta,
-        // de forma imediata e deterministica.
-        client.connection.stream.destroy();
-        return 'nunca entregue';
-      }),
-      'o COMMIT sobre conexao morta tinha de falhar'
-    );
-
-    assert.ok(capturado instanceof Error, 'a falha chega como Error');
-
-    // EVIDENCIA, nao suposicao: no `pg` 8.23.0 o `_release` do `pg-pool` descarta
-    // o client quando `!client._queryable || client._ending`, que e exatamente o
-    // estado de um client cuja conexao caiu. Ou seja, `release()` SEM argumento
-    // ja e suficiente para impedir o reuso de uma conexao quebrada — passar
-    // `release(err)` seria redundante nesta versao.
-    assert.equal(pool.idleCount, 0, 'o client quebrado nao ficou ocioso no pool');
-
-    // E o pool continua utilizavel: abre uma conexao nova sob demanda.
-    const vivo = await withReadSnapshot(pool, async (client) => {
-      const { rows } = await client.query('SELECT 1 AS ok');
-      return rows[0].ok;
-    });
-    assert.equal(vivo, 1, 'o pool se recupera abrindo uma conexao nova');
+    }
   }
 );
